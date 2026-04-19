@@ -6,7 +6,7 @@ import time
 # CONFIG
 
 
-BACKEND_URL = "http://localhost:8000"
+BACKEND_URL = st.secrets["BACKEND_URL"]
 
 st.set_page_config(
     page_title="Alinda",
