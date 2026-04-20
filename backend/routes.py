@@ -11,10 +11,12 @@ from .schemas import (
     SendMessageRequest,
     MessageResponse,
     ConversationResponse,
-    CrisisReadyRequest
+    CrisisReadyRequest,
+    TypingStatusRequest
 )
 
 from .session_manager import SessionManager
+from . import models
 
 
 router = APIRouter(prefix="/api/v1/session", tags=["Session"])
@@ -144,3 +146,15 @@ async def mark_crisis_ready(request: CrisisReadyRequest, db: Session = Depends(g
         return message
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
+# GET TYPING STATUS
+
+@router.post("/typing-status")
+def update_typing_status(request: TypingStatusRequest, db: Session = Depends(get_db)):
+    session = db.query(models.Session).filter_by(room_id=request.room_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.partner_typing = request.is_typing
+    session.typing_role = request.role if request.is_typing else None
+    db.commit()
+    return {"ok": True}

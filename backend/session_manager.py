@@ -147,7 +147,10 @@ class SessionManager:
             session.crisis_ready_a = False
 
             session.crisis_ready_b = False
-
+            
+            #Typing state
+            session.partner_typing = False
+            session.typing_role = None
             opening_message = (
                 f"Hello {session.name_a} and {session.name_b}.\n\n"
                 "Thank you both for being here. "
@@ -225,6 +228,9 @@ class SessionManager:
 
         # Ensure the message appears in the query immediately
         db.flush()
+        #clear typing indicator - sender has committed their message
+        session.partner_typing = False
+        session.typing_role = False
 
 
         

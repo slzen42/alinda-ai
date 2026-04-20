@@ -43,3 +43,6 @@ venv/
 env/
 .venv/
 ENV/
+
+#secret.toml
+.streamlit/

@@ -511,8 +511,17 @@ hr { border-color: #E8E0D2 !important; margin: 2rem 0 !important; }
     font-style: italic;
     color: #C8B8AC;
     letter-spacing: 0.04em;
+    animation: none !important;
+    opacity: 1 !important;
+    transition: none !important;
+                
 }
-
+                
+.turn-banner {
+    animation: none !important;
+    transition: none !important;
+}
+                
 /* Thinking indicator */
 .thinking-row {
     display: flex;
@@ -737,6 +746,7 @@ def init_state():
         "intake_answers": {},
         "msg_key": 0,
         "error": None,
+        "was_typing": False,
     }
 
     for k, v in defaults.items():
@@ -798,6 +808,13 @@ def get_session(room_id):
 
 def mark_crisis_ready(room_id, role):
     return api("post", "/api/v1/session/crisis-ready", json={"room_id": room_id, "role": role})
+
+def update_typing(room_id, role, is_typing):
+    return api("post", "/api/v1/session/typing-status", json={
+        "room_id": room_id,
+        "role": role,
+        "is_typing": is_typing
+    })
 
 
 
@@ -1525,6 +1542,16 @@ def render_chat():
             label_visibility="collapsed"
         )
 
+        # Send typing status to backend
+        if user_input:
+            if not st.session_state.get("was_typing"):
+                update_typing(st.session_state.room_id, my_role, True)
+                st.session_state.was_typing = True
+        else:
+            if st.session_state.get("was_typing"):
+                update_typing(st.session_state.room_id, my_role, False)
+                st.session_state.was_typing = False
+
         if st.button("Send", use_container_width=True):
             if user_input and user_input.strip():
                 # Show thinking while API call is in progress
@@ -1539,6 +1566,8 @@ def render_chat():
                 if send_err:
                     st.error(f"Couldn't send: {send_err}")
                 else:
+                    update_typing(st.session_state.room_id, my_role, False)
+                    st.session_state.was_typing = False
                     st.session_state.msg_key += 1
                     st.rerun()
             else:
@@ -1551,16 +1580,63 @@ def render_chat():
         </div>
         """, unsafe_allow_html=True)
 
-        col_refresh, _ = st.columns([1, 3])
-        with col_refresh:
-            if st.button("↻ Refresh", use_container_width=True):
-                st.rerun()
+        # Typing indicator
+        is_typing = session_data.get("partner_typing", False)
+        partner_role = "b" if my_role == "a" else "a"
+
+        # Never show dots if the partner's message is already the last one in the conversation
+        # This prevents dots appearing after the message has arrived
+        if is_typing and messages_data:
+            user_messages = [m for m in messages_data if m.get("sender") in ["a", "b"]]
+            if user_messages and user_messages[-1].get("sender") == partner_role:
+                is_typing = False
+
+        if is_typing:
+            st.markdown("""
+            <div style="
+                display: flex;
+                justify-content: flex-start;
+                padding: 8px 0 4px;
+                margin-bottom: 8px;
+            ">
+                <div style="
+                    background: #FFFFFF;
+                    border: 1px solid #EAE2D6;
+                    border-left: 3px solid #B8CEB9;
+                    border-radius: 2px;
+                    padding: 10px 16px;
+                    display: flex;
+                    align-items: center;
+                    gap: 5px;
+                ">
+                    <span style="
+                        width: 6px; height: 6px; border-radius: 50%;
+                        background: #B8A89C; display: inline-block;
+                        animation: tDot 1.4s ease-in-out infinite;
+                    "></span>
+                    <span style="
+                        width: 6px; height: 6px; border-radius: 50%;
+                        background: #B8A89C; display: inline-block;
+                        animation: tDot 1.4s ease-in-out 0.2s infinite;
+                    "></span>
+                    <span style="
+                        width: 6px; height: 6px; border-radius: 50%;
+                        background: #B8A89C; display: inline-block;
+                        animation: tDot 1.4s ease-in-out 0.4s infinite;
+                    "></span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
         st.markdown("""
         <div class="session-footnote" style="margin-top:8px;">
-            Waiting for the conversation to continue
+            The conversation will update automatically
         </div>
         """, unsafe_allow_html=True)
+
+        # Auto-refresh every 3 seconds — no manual button needed
+        time.sleep(3)
+        st.rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
 

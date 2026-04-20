@@ -24,6 +24,8 @@ class SessionStateResponse(BaseModel):
     locked_until: Optional[datetime] = None
     crisis_ready_a: Optional[bool] = False
     crisis_ready_b: Optional[bool] = False
+    partner_typing: Optional[bool] = False
+    typing_role: Optional[str] = None
     class Config:
         from_attributes = True #allows ORM compatibility
 class SendMessageRequest(BaseModel):
@@ -48,3 +50,8 @@ class ConversationResponse(BaseModel):
 class CrisisReadyRequest(BaseModel):
     room_id: str = Field(... , min_length=1)
     role: Literal["a", "b"]
+
+class TypingStatusRequest(BaseModel):
+    room_id: str = Field(..., min_length=1)
+    role: Literal["a", "b"]
+    is_typing: bool

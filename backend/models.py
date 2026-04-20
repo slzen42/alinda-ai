@@ -119,6 +119,9 @@ class Session(Base):
     crisis_ready_a = Column(Boolean, default=False)
     crisis_ready_b = Column(Boolean, default=False)
 
+    partner_typing = Column(Boolean, default=False)
+    typing_role = Column(String, nullable=True)
+
     # Escalation memory
     # Tracks history of escalation events for context-aware responses
     cooldown_count = Column(Integer, default=0)
