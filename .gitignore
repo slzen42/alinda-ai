@@ -46,3 +46,8 @@ ENV/
 
 #secret.toml
 .streamlit/
+
+# Machine Learning Datasets and DB Exports
+data/raw/
+data/processsed/
+data/exports/
