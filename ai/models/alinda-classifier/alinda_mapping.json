@@ -1,0 +1,70 @@
+{
+  "escalation": {
+    "anger": 5,
+    "annoyance": 3,
+    "disapproval": 2,
+    "disgust": 3,
+    "nervousness": 1
+  },
+  "blame": {
+    "anger": 3,
+    "annoyance": 2,
+    "disapproval": 4,
+    "disgust": 2
+  },
+  "vulnerability": {
+    "grief": 6,
+    "sadness": 5,
+    "fear": 5,
+    "nervousness": 4,
+    "disappointment": 4,
+    "remorse": 3,
+    "embarrassment": 3,
+    "caring": 2
+  },
+  "repair": {
+    "remorse": 6,
+    "caring": 4,
+    "gratitude": 4,
+    "approval": 2,
+    "relief": 2
+  },
+  "positive": {
+    "joy": 4,
+    "love": 4,
+    "admiration": 3,
+    "relief": 3,
+    "optimism": 3,
+    "gratitude": 3,
+    "amusement": 1
+  },
+  "toxicity": {
+    "disgust": 5,
+    "anger": 4,
+    "annoyance": 2,
+    "disapproval": 2
+  },
+  "contempt": {
+    "disgust": 6,
+    "disapproval": 4,
+    "annoyance": 2
+  },
+  "engagement": {
+    "curiosity": 4,
+    "confusion": 2,
+    "surprise": 2,
+    "realization": 3
+  },
+  "thresholds": {
+    "crisis": 0.2,
+    "toxicity": 0.22,
+    "contempt": 0.22,
+    "escalation": 0.25,
+    "blame": 0.25,
+    "vulnerability": 0.25,
+    "repair": 0.28,
+    "positive": 0.28,
+    "engagement": 0.3,
+    "default": 0.28
+  }
+}

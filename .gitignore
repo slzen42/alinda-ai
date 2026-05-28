@@ -51,3 +51,7 @@ ENV/
 data/raw/
 data/processsed/
 data/exports/
+
+#ignore heavy machine learning model weights
+ai/models/alinda-classifier/*.safetensors
+ai/models/alinda-classifier/*.bin
