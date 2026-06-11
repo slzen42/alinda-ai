@@ -18,6 +18,7 @@ Exit code:
 import sys
 import traceback
 from pathlib import Path
+import asyncio
 
 
 # COLOUR OUTPUT — works on all modern terminals including Windows 10+
@@ -645,6 +646,188 @@ except Exception as e:
     results["Phase 3"] = False
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 4 — LLM client
+# ─────────────────────────────────────────────────────────────────────────────
+
+phase("Phase 4 — ai.llm_client")
+
+try:
+    from ai.llm_client import (
+        generate_session_response,
+        generate_background_response,
+        generate_session_opening,
+        _clean_response,
+        _detect_addressed_partner,
+        _get_fallback,
+        GROQ_API_KEY_SESSION,
+        GROQ_API_KEY_BACKGROUND,
+    )
+
+    # ── API key presence ──────────────────────────────────────────────────────
+    if GROQ_API_KEY_SESSION:
+        ok(f"GROQ_API_KEY_SESSION loaded ({len(GROQ_API_KEY_SESSION)} chars)")
+    else:
+        fail("GROQ_API_KEY_SESSION not set — live session calls will use fallback")
+
+    if GROQ_API_KEY_BACKGROUND:
+        ok(f"GROQ_API_KEY_BACKGROUND loaded ({len(GROQ_API_KEY_BACKGROUND)} chars)")
+    else:
+        warn("GROQ_API_KEY_BACKGROUND not set — background tasks will use session key")
+
+    # ── _clean_response() ────────────────────────────────────────────────────
+    clean_cases = [
+        ("Alinda: What do you mean by that?",     "What do you mean by that?"),
+        ("**Important:** Tell me more.",           "Important: Tell me more."),
+        ("Let's talk about this together",         "You could talk about this together."),
+        ("<think>internal reasoning</think>Hello", "Hello."),
+        ("## New section\nSky: something",        ""),  # Truncated to empty
+        ("",                                       ""),
+        ("what do you feel right now",             "What do you feel right now?"),
+        ("I see that.",                            "I see that."),
+    ]
+
+    clean_errors = []
+    for raw, expected in clean_cases:
+        result = _clean_response(raw)
+        if expected == "" and result == "":
+            pass
+        elif expected and result != expected:
+            # Allow for minor punctuation differences
+            if result.rstrip(".?!") != expected.rstrip(".?!"):
+                clean_errors.append(
+                    f"Input: {raw!r}\n    Expected: {expected!r}\n    Got: {result!r}"
+                )
+
+    if not clean_errors:
+        ok(f"_clean_response() passed all {len(clean_cases)} test cases")
+    else:
+        for err in clean_errors:
+            fail(f"_clean_response() mismatch:\n    {err}")
+
+    # ── Speaker detection ─────────────────────────────────────────────────────
+    detection_cases = [
+        ("Sky, what did you hear in that?",  "Sky",  "Cloud", "a", "a"),
+        ("Cloud, how does that land for you?","Sky", "Cloud", "a", "b"),
+        ("I want to ask you both something.", "Sky",  "Cloud", "a", "a"),  # Ambiguous → decision wins
+    ]
+    for text, na, nb, decision_t, expected in detection_cases:
+        result = _detect_addressed_partner(text, na, nb, decision_t)
+        if result == expected:
+            ok(f"_detect_addressed_partner: '{text[:40]}...' → '{result}'")
+        else:
+            fail(f"_detect_addressed_partner: expected '{expected}', got '{result}' for: {text!r}")
+
+    # ── Fallback messages ─────────────────────────────────────────────────────
+    for action in ["safety_intervention", "crisis_self_harm", "explore", "unknown_action"]:
+        fb = _get_fallback(action, {})
+        if isinstance(fb, str) and len(fb) > 10:
+            ok(f"_get_fallback('{action}') returned: '{fb[:60]}...'")
+        else:
+            fail(f"_get_fallback('{action}') returned invalid string: {fb!r}")
+
+    # Short system_message should be preferred as fallback
+    fb_with_msg = _get_fallback("explore", {"system_message": "What do you mean?"})
+    if fb_with_msg == "What do you mean?":
+        ok("_get_fallback() prefers short system_message over default")
+    else:
+        warn(f"_get_fallback() did not prefer system_message — got: {fb_with_msg!r}")
+
+    # ── Live API test (only if key is set) ────────────────────────────────────
+    if GROQ_API_KEY_SESSION:
+        info("Running live Groq API test (one minimal call)...")
+
+        async def _live_test():
+            result = await generate_background_response(
+                system_prompt = "You are a test assistant. Reply with exactly three words.",
+                user_prompt   = "Say hello briefly.",
+                task_label    = "test_ai_live_check",
+            )
+            return result
+
+        live_result = asyncio.run(_live_test())
+
+        if isinstance(live_result, str) and len(live_result) > 0:
+            ok(f"Live Groq API call succeeded: '{live_result[:80]}'")
+        else:
+            fail("Live Groq API call returned empty string")
+
+        # ── generate_session_opening() ────────────────────────────────────────
+        async def _opening_test():
+            return await generate_session_opening(
+                name_a        = "Sky",
+                name_b        = "Cloud",
+                session_style = "balanced",
+            )
+
+        opening = asyncio.run(_opening_test())
+        if isinstance(opening, str) and "Sky" in opening and "Cloud" in opening:
+            ok(f"generate_session_opening() returned: '{opening[:80]}...'")
+        else:
+            fail(f"generate_session_opening() unexpected result: {opening!r}")
+
+    else:
+        warn("Skipping live API tests — GROQ_API_KEY_SESSION not set")
+        warn("Set the key in .env to run full validation")
+
+    # ── generate_session_response() fallback path ─────────────────────────────
+    # Test the fallback path without making an API call (bad key)
+    async def _fallback_test():
+        from ai.llm_client import generate_session_response as gsr
+        fake_decision = {
+            "action":         "explore",
+            "target":         "a",
+            "speaker":        "a",
+            "quote":          "I feel ignored",
+            "feeling":        None,
+            "system_message": "",
+            "confidence":     "medium",
+        }
+        fake_analysis = {
+            "escalation": 0, "blame": 0, "vulnerability": 3,
+            "is_abusive": False, "toxicity": 0, "crisis": "none"
+        }
+
+        class FakeMsg:
+            def __init__(self, sender, content):
+                self.sender = sender
+                self.content = content
+
+        result = await gsr(
+            name_a           = "Sky",
+            name_b           = "Cloud",
+            recent_messages  = [FakeMsg("a", "I feel ignored")],
+            analysis         = fake_analysis,
+            decision         = fake_decision,
+        )
+        return result
+
+    fallback_result = asyncio.run(_fallback_test())
+    if isinstance(fallback_result, dict) and "message" in fallback_result:
+        if GROQ_API_KEY_SESSION:
+            ok(f"generate_session_response() returned: "
+               f"next_speaker={fallback_result['next_speaker']!r}, "
+               f"llm={fallback_result['llm']!r}, "
+               f"message='{fallback_result['message'][:60]}'")
+        else:
+            if not fallback_result["llm"] and fallback_result["message"]:
+                ok("generate_session_response() correctly uses fallback with no key")
+            else:
+                warn(f"Unexpected result: {fallback_result}")
+    else:
+        fail(f"generate_session_response() returned unexpected format: {fallback_result}")
+
+    results["Phase 4"] = True
+
+except ImportError as e:
+    fail(f"Import error in llm_client.py: {e}")
+    info("Check all imports and function names match exactly.")
+    traceback.print_exc()
+    results["Phase 4"] = False
+except Exception as e:
+    fail(f"Phase 4 crashed: {e}")
+    traceback.print_exc()
+    results["Phase 4"] = False
 
 # SUMMARY
 

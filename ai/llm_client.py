@@ -1,362 +1,768 @@
-import httpx
-import re
+"""
+ai/llm_client.py
+
+The transport layer between Alinda's decision engine and the Groq LLM API.
+
+Single responsibility: given a routing decision and all necessary context,
+assemble a prompt, call the API, clean the response, and return it.
+
+This file makes no therapeutic decisions.
+All prompt logic lives in ai/prompts.py.
+All routing decisions come from ai/mediator_logic.py.
+All session context is assembled and passed in by backend/session_manager.py.
+
+Public interface:
+    generate_session_response()   — live session messages       (SESSION key)
+    generate_background_response() — intake + session summary   (BACKGROUND key)
+    generate_session_opening()    — dynamic personalised intro  (SESSION key)
+
+Architecture:
+    session_manager.py
+        └── generate_session_response(names, messages, profiles, decision)
+                ├── build_prompt()              [ai/prompts.py]
+                ├── get_temperature(action)     [ai/prompts.py]
+                ├── get_max_tokens(action)      [ai/prompts.py]
+                ├── _call_groq()                [this file — async HTTP + retry]
+                ├── _clean_response()           [this file — strip artifacts]
+                └── _detect_addressed_partner() [this file — who did LLM address?]
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
 import os
-from dotenv import load_dotenv
+import re
+import time
 from pathlib import Path
+from typing import Optional
 
-load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent.parent / ".env")
+import httpx
+from dotenv import load_dotenv
 
+from ai.prompts import (
+    SESSION_MODEL,
+    BACKGROUND_MODEL,
+    SYSTEM_PROMPT,
+    build_prompt,
+    get_temperature,
+    get_max_tokens,
+)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIGURATION
+# ─────────────────────────────────────────────────────────────────────────────
 
-# GROQ CONFIG
+logger = logging.getLogger(__name__)
 
-
-
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env")
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-if not GROQ_API_KEY:
-    print("WARNING: GROQ_API_KEY is not set. LLM calls will fail. ")
-MODEL_NAME = "llama-3.3-70b-versatile"
 
+# Two separate keys so background tasks never consume
+# the session key's rate limit budget during live sessions.
+GROQ_API_KEY_SESSION    = os.environ.get("GROQ_API_KEY_SESSION", "")
+GROQ_API_KEY_BACKGROUND = os.environ.get("GROQ_API_KEY_BACKGROUND", "")
 
-
-# RESPONSE SANITIZER
-
-
-def sanitize_response(text: str):
-
-    text = re.sub(
-        r"^(alinda|mediator|ai|\[alinda\]|\[mediator\]):\s*",
-        "",
-        text,
-        flags=re.IGNORECASE
+if not GROQ_API_KEY_SESSION:
+    logger.error(
+        "GROQ_API_KEY_SESSION is not set. "
+        "All live session responses will use fallback messages."
     )
 
-    text = re.sub(r"\bboth of us\b", "both of you", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bwe should\b", "you might consider", text, flags=re.IGNORECASE)
-    text = re.sub(r"\blet's\b", "you could", text, flags=re.IGNORECASE)
-
-    text = re.sub(r'(^\s*[a-z])', lambda m: m.group(1).upper(), text)
-    text = re.sub(r'([.!?]\s+)([a-z])', lambda m: m.group(1) + m.group(2).upper(), text)
-
-    # Add question mark to sentences that are questions but missing punctuation
-    if text and not text[-1] in '.?!':
-        question_starters = (
-            'what ', 'how ', 'why ', 'when ', 'where ', 'who ',
-            'can you', 'could you', 'do you', 'did you',
-            'is there', 'are you', 'was it', 'will you',
-            'have you', 'would you', 'is it', 'does it'
-        )
-        if text.lower().startswith(question_starters):
-            text = text + '?'
-
-    return text.strip()
-
-
-
-
-# GENERATION CLEANER
-
-
-def clean_generation(text: str):
-    text = text.split("##")[0]
-    text = text.split("Instruction")[0]
-    text = text.split("User:")[0]
-    text = text.split("Assistant:")[0]
-    return text.strip()
-
-
-
-# ACTION GUIDANCE
-
-
-def get_action_guidance(action):
-
-    guidance = {
-
-        "explore":
-        "Something worth staying with just surfaced. "
-        "Ask one question that helps this person go deeper into what they just shared — "
-        "the feeling behind it, or what it means to them. Stay with this person for now.",
-
-        "repair_acknowledgement":
-        "One partner just reached toward the other — an apology or a softening. "
-        "Turn to the other partner and ask simply how that lands for them.",
-
-        "validate":
-        "Something vulnerable was just shared. "
-        "Turn to the other partner and ask what they heard — "
-        "just what they heard, not what they think about it.",
-
-        "reflect":
-        "One partner just tried to reflect what they heard. "
-        "Ask the original speaker whether that felt right.",
-
-        "reframe":
-        "The focus has shifted to what the other person did wrong. "
-        "Gently bring it back to what this person is feeling — "
-        "not as a correction, but out of genuine curiosity about what's underneath.",
-
-        "free_chat_invite":
-        "The tension has eased. Invite them to speak directly to each other.",
-
-        "resume_guidance":
-        "Help this person articulate what they most need their partner to understand right now.",
-
-        "deescalate":
-        "Something intense just happened. The context below has more detail. "
-        "Don't reference the attacking words — speak to the pain or frustration driving them. "
-        "Be warm but steady. One grounded question.",
-
-        "affirm_progress":
-        "Something genuinely good just happened in this conversation. "
-        "Acknowledge it briefly and ask the other how it feels to hear that.",
-
-        "cooldown_start":
-        "This conversation needs a pause. "
-        "Ask them to stop for a moment and give them one simple, concrete thing to do.",
-
-        "safety_intervention":
-        "Someone just crossed a line with their words. The context below has more detail. "
-        "Be firm and human — not punishing. "
-        "Don't repeat or reference the harmful words. "
-        "Speak to what's happening emotionally for this person and name clearly "
-        "that this space requires a different way of expressing it.",
-
-        "repair_required":
-        "The session is paused. "
-        "Ask this person to try saying what they feel — "
-        "not what they think about the other person.",
-
-        "acknowledge_mediator":
-        "This person is talking to you directly. "
-        "Respond briefly and honestly. Then bring the conversation back to what matters.",
-
-        "acknowledge_refusal":
-        "This person isn't ready to engage. "
-        "Don't push. Ask what's making it hard, or what they need to feel ready.",
-
-        "redirect_demand":
-        "A demand is being made. "
-        "Look past the demand to what's driving it — "
-        "ask about the feeling underneath, not the request itself.",
-
-        "crisis_self_harm":
-        "Someone just expressed thoughts of self-harm. "
-        "Do not treat this as part of the mediation. "
-        "Respond with warmth and directness — acknowledge that you heard them, "
-        "provide a crisis resource clearly, and explain that the session is pausing. "
-        "Do not ask a follow-up question. Do not redirect to the other partner.",
-
-
-        "crisis_resume":
-        "The session is resuming after a serious pause. "
-        "The system_message has context about who needs to be addressed. "
-        "Be gentle and unhurried. Acknowledge that things got very heavy, "
-        "without referencing the specific words that were said. "
-        "Open a small door — don't push anyone through it.",
-    }
-
-
-    return guidance.get(action, "Help this person say what they most need their partner to hear.")
-
-
-
-
-# SYSTEM PROMPT
-
-
-
-
-SYSTEM_PROMPT = """
-You are Alinda, a couples mediator. You have the warmth, skill, and presence of an experienced therapist.
-
-You are sitting with two real people who are struggling to understand each other. Your entire purpose is to help each of them feel genuinely heard — and through that, to help them hear each other.
-
-YOUR VOICE:
-Warm, unhurried, and direct. You don't perform empathy — you're actually curious. 
-You speak simply. You never use clinical language or therapeutic jargon.
-You sound like a wise person who has sat with a lot of human pain and isn't frightened by it.
-
-HOW YOU RESPOND:
-- Keep responses to 1-2 sentences. Brevity creates space for the other person to speak.
-- Ask one question at a time. A second question dilutes the first.
-- Address the person by name once per response, naturally — not at the start of every sentence.
-- Respond to what someone means, not just what they said.
-
-ON MIRRORING:
-Sometimes reflecting a person's exact words back to them is powerful — it helps them hear what they just said.
-Do this sparingly and with intention. When you do mirror, isolate the specific word or phrase that carries the most emotional weight — not the whole sentence.
-Never mirror language that attacks or demeans the other partner. When someone uses a hurtful word about their partner, respond to the emotion driving it, not the word itself.
-
-WHAT YOU NEVER DO:
-- Give advice or tell people what they should do.
-- Explain one partner's behaviour to the other.
-- Take sides, even subtly.
-- Rush past something important to get to the next topic.
-- Ask two questions in one response.
-
-YOUR THERAPEUTIC INSTINCTS:
-When someone attacks their partner, look for the pain underneath the attack. Name the pain, not the attack.
-When someone resists, get curious about the resistance — it usually contains something important.
-When something true surfaces in the conversation, slow down and stay with it.
-When one partner shares something vulnerable, turn to the other and ask what they heard — not what they think about it.
-When someone repairs — apologises, softens, reaches toward the other — name it and give it space.
-
-You are not here to fix anything. You are here to help two people understand each other.
-
-Only output Alinda's spoken words. Nothing else.
-"""
-
-
-# BUILD CONVERSATION CONTEXT
-
-
-def build_context(messages, name_a, name_b):
-
-    context = []
-
-    for msg in messages[-6:]:
-        if msg.sender == "a":
-            speaker = name_a
-        elif msg.sender == "b":
-            speaker = name_b
-        elif msg.sender == "ai":
-            speaker = "Alinda"
-        else:
-            continue
-        content = getattr(msg, "content", str(msg))
-        context.append(f"{speaker}: {content}")
-
-    return "\n".join(context)
-
-
-
-# BUILD PROMPT
-
-
-def build_prompt(name_a, name_b, decision, recent_messages):
-
-    speaker = decision.get("speaker")
-    quote = decision.get("quote")
-    feeling = decision.get("feeling")
-    action = decision.get("action")
-    target = decision.get("target")
-
-    speaker_name = name_a if speaker == "a" else name_b
-
-    if target == "a":
-        target_name = name_a
-    elif target == "b":
-        target_name = name_b
-    else:
-        target_name = "both partners"
-
-    action_guidance = get_action_guidance(action)
-    context = build_context(recent_messages, name_a, name_b)
-
-    feeling_context = f'They said they feel "{feeling}".' if feeling else ""
-
+if not GROQ_API_KEY_BACKGROUND:
+    logger.warning(
+        "GROQ_API_KEY_BACKGROUND is not set. "
+        "Defaulting to GROQ_API_KEY_SESSION for background tasks. "
+        "Set a separate key to prevent rate limit contention."
+    )
+    GROQ_API_KEY_BACKGROUND = GROQ_API_KEY_SESSION
+
+# HTTP timeouts — connect timeout is short, read timeout is generous
+# because the first token from a large model can take several seconds.
+_TIMEOUT = httpx.Timeout(connect=10.0, read=90.0, write=10.0, pool=5.0)
+
+# Retry configuration
+_MAX_RETRIES     = 3
+_RETRY_CODES     = {429, 500, 502, 503, 504}
+_RETRY_BASE_SECS = 1.0   # Doubles on each retry: 1s → 2s → 4s
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FALLBACK MESSAGES
+#
+# These are returned when the Groq API fails after all retries.
+# They must feel like Alinda is genuinely pausing — not like a system error.
+# Per-action fallbacks ensure the response is contextually appropriate
+# even when the API is unreachable.
+#
+# Safety fallbacks are kept firm, not soft — a session in crisis cannot
+# afford a generic "I'm processing" message.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_FALLBACKS: dict[str, str] = {
+    # Safety-critical — firm and present
+    "safety_intervention": "I need us to slow down. What just happened matters.",
+    "crisis_self_harm":    "What you just said matters and I am not moving past it.",
+    "repair_required":     "Let's try to find a different way to say that.",
+    "cooldown_start":      "Let's pause here. There is no rush.",
+
+    # Exploratory — warm and open
+    "explore":             "I am sitting with what you just said. Tell me more.",
+    "validate":            "What did you hear in that? I want to make sure nothing got lost.",
+    "deescalate":          "What is really happening for you right now?",
+    "resume_guidance":     "What is the most important thing you want the other person to understand?",
+    "affirm_progress":     "Something just shifted here. Take a moment with that.",
+    "free_chat_invite":    "I am going to step back for a moment. Speak directly to each other.",
+
+    # Generic fallback — warm, buys time without alarming
+    "_default": (
+        "I am taking a moment with what you just shared. Give me a few seconds."
+    ),
+}
+
+
+def _get_fallback(action: str, decision: dict) -> str:
+    """
+    Returns the most appropriate fallback message for a given action.
+
+    Prefers the decision's own system_message if it is short enough
+    to serve as a fallback (under 20 words) — this keeps the fallback
+    contextually grounded in what mediator_logic.py decided.
+    """
     system_message = decision.get("system_message", "")
-    therapeutic_context = (
-        f"\nRespond to this: {system_message}\n"
-        if system_message else ""
-    )
-
-    prompt = f"""A mediation session is taking place between two partners.
-
-Participants: {name_a} and {name_b}
-
-Conversation so far:
-{context}
-
-Do not repeat any response Alinda has already given above.
-
-The most recent message came from: {speaker_name}
-
-{speaker_name} just said:
-"{quote}"
-
-{feeling_context}
-{therapeutic_context}
-Therapeutic direction:
-{action_guidance}
-
-Respond to: {target_name}
-
-Respond as Alinda. One or two sentences. Let the response breathe.
-"""
-
-    return prompt
+    if system_message and len(system_message.split()) <= 20:
+        return system_message
+    return _FALLBACKS.get(action, _FALLBACKS["_default"])
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# RESPONSE CLEANING
+#
+# Raw LLM output regularly contains artifacts that must be stripped
+# before the message is stored or sent:
+#
+#   Speaker labels:    "Alinda: ..."  → remove
+#   Thinking blocks:   <think>...</think>  → remove entirely
+#   Truncation marks:  ##, User:, Assistant:  → truncate at marker
+#   Markdown:          **bold**, *italic*, `code`  → strip formatting
+#   Pronoun drift:     "let's", "we should"  → replace with non-participant voice
+#   Capitalisation:    ensure first character is uppercase
+#   Punctuation:       ensure terminal punctuation is present
+# ─────────────────────────────────────────────────────────────────────────────
 
-# GENERATE MEDIATION MESSAGE
+_SPEAKER_LABEL_RE = re.compile(
+    r"^(alinda|mediator|therapist|ai|assistant|\[alinda\]|\[mediator\])\s*[:\-]\s*",
+    re.IGNORECASE,
+)
+
+_THINKING_TAG_RE = re.compile(
+    r"<think>.*?</think>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+_MARKDOWN_BOLD_RE    = re.compile(r"\*\*(.*?)\*\*")
+_MARKDOWN_ITALIC_RE  = re.compile(r"(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)")
+_MARKDOWN_CODE_RE    = re.compile(r"`(.*?)`")
+
+# Markers that indicate the model has started generating conversation history
+# rather than the actual response — truncate at these.
+_TRUNCATION_MARKERS = [
+    "##", "\nUser:", "\nAssistant:", "\nHuman:", "\nSystem:",
+    "\nPartner A:", "\nPartner B:",
+]
+
+# Pronoun corrections — prevent Alinda from positioning herself as a session participant.
+# Each tuple is (compiled pattern, replacement string).
+_PRONOUN_CORRECTIONS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\blet'?s\b",       re.IGNORECASE), "you could"),
+    (re.compile(r"\bwe should\b",    re.IGNORECASE), "you might"),
+    (re.compile(r"\bwe can\b",       re.IGNORECASE), "you can"),
+    (re.compile(r"\bboth of us\b",   re.IGNORECASE), "both of you"),
+]
+
+# Words that, when a sentence ends with them and no punctuation follows,
+# suggest the sentence is a question.
+_QUESTION_ENDING_WORDS = frozenset({
+    "you", "that", "now", "right", "there", "it", "moment", "here",
+    "feeling", "hear", "mean", "understand", "happen", "feel", "said",
+    "happening", "underneath", "driving", "behind",
+})
 
 
-async def generate_mediation_message(name_a, name_b, recent_messages, analysis, decision):
+def _clean_response(raw: str) -> str:
+    """
+    Strips all LLM artifacts from a raw response string.
 
-    is_safety = decision.get("action") == "safety_intervention"
-    is_abusive = analysis.get("is_abusive", False)
-    toxicity = analysis.get("toxicity", 0)
+    Returns clean, properly capitalised, punctuated therapeutic text.
+    Guaranteed to return a string — returns empty string if input is empty.
 
-    prompt = build_prompt(name_a, name_b, decision, recent_messages)
+    Pipeline:
+        1. Strip thinking blocks
+        2. Truncate at conversation-structure markers
+        3. Strip speaker label prefix
+        4. Strip markdown formatting
+        5. Apply pronoun corrections
+        6. Normalise whitespace
+        7. Ensure first character is capitalised
+        8. Ensure terminal punctuation
+    """
+    if not raw:
+        return ""
 
-    if is_safety or (is_abusive and toxicity >= 4):
-        prompt += "\nTone: Be firm and direct. Do not soften this.\n"
+    text = raw.strip()
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": prompt}
-    ]
+    # 1. Remove <think>...</think> blocks
+    text = _THINKING_TAG_RE.sub("", text).strip()
+
+    # 2. Truncate at structural markers
+    for marker in _TRUNCATION_MARKERS:
+        if marker in text:
+            text = text.split(marker)[0].strip()
+
+    # 3. Strip speaker label at the start
+    text = _SPEAKER_LABEL_RE.sub("", text).strip()
+
+    # 4. Strip markdown
+    text = _MARKDOWN_BOLD_RE.sub(r"\1", text)
+    text = _MARKDOWN_ITALIC_RE.sub(r"\1", text)
+    text = _MARKDOWN_CODE_RE.sub(r"\1", text)
+
+    # 5. Pronoun corrections
+    for pattern, replacement in _PRONOUN_CORRECTIONS:
+        text = pattern.sub(replacement, text)
+
+    # 6. Normalise whitespace
+    text = re.sub(r" {2,}", " ", text)
+    text = re.sub(r"\n{2,}", "\n", text)
+    text = text.strip()
+
+    if not text:
+        return ""
+
+    # 7. Ensure first character is capitalised
+    if text[0].islower():
+        text = text[0].upper() + text[1:]
+
+    # 8. Ensure terminal punctuation
+    if text[-1] not in ".!?":
+        words = text.split()
+        last_word = words[-1].rstrip(".,!?;:").lower() if words else ""
+        if last_word in _QUESTION_ENDING_WORDS:
+            text += "?"
+        else:
+            text += "."
+
+    return text
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SPEAKER DETECTION
+#
+# mediator_logic.py sets decision["target"] based on routing rules.
+# The LLM reads the full conversation and sometimes correctly addresses
+# a different person — because it sees nuance the routing logic missed.
+#
+# This function reads the first sentence of the response and checks
+# whether it leads with a partner name. If it does, the LLM's choice
+# overrides the routing decision. If it is ambiguous, the routing decision wins.
+#
+# This solves the turn assignment bug where Alinda addresses Cloud but
+# the floor is given to Sky.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _detect_addressed_partner(
+    text:            str,
+    name_a:          str,
+    name_b:          str,
+    decision_target: str,
+) -> str:
+    """
+    Infers who the LLM actually addressed from the first sentence.
+
+    Args:
+        text:             Cleaned LLM response.
+        name_a:           Partner A's display name.
+        name_b:           Partner B's display name.
+        decision_target:  The routing decision's intended target ("a", "b", or "both").
+
+    Returns:
+        "a", "b", or "both".
+    """
+    # Extract the first sentence
+    end_pos = len(text)
+    for ch in ".?!":
+        idx = text.find(ch)
+        if 0 < idx < end_pos:
+            end_pos = idx
+    first_sentence = text[:end_pos].lower()
+
+    name_a_found = name_a.lower() in first_sentence
+    name_b_found = name_b.lower() in first_sentence
+
+    if name_a_found and not name_b_found:
+        detected = "a"
+    elif name_b_found and not name_a_found:
+        detected = "b"
+    else:
+        detected = decision_target   # Ambiguous — trust the router
+
+    if detected != decision_target:
+        logger.debug(
+            f"Speaker detection override: decision='{decision_target}' → "
+            f"actual='{detected}' (LLM addressed {repr(name_a if detected == 'a' else name_b)})"
+        )
+
+    return detected
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CORE HTTP CALL — ASYNC WITH EXPONENTIAL BACKOFF RETRY
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _call_groq(
+    messages:    list[dict],
+    model:       str,
+    temperature: float,
+    max_tokens:  int,
+    api_key:     str,
+    task_label:  str = "session",
+) -> str:
+    """
+    Fires one async POST to the Groq chat completions endpoint.
+    Retries on rate limits and transient server errors.
+
+    Args:
+        messages:    Full messages array — [{"role": ..., "content": ...}, ...]
+        model:       Groq model string.
+        temperature: Sampling temperature (0.0 – 1.0).
+        max_tokens:  Maximum completion tokens.
+        api_key:     Groq API key for this call.
+        task_label:  Human-readable label for logs.
+
+    Returns:
+        Raw LLM response string — unstripped, uncleaned.
+
+    Raises:
+        RuntimeError: On authentication failure, invalid request,
+                      or exhausted retries.
+    """
+    if not api_key:
+        raise RuntimeError(
+            f"No API key configured for task '{task_label}'. "
+            f"Set GROQ_API_KEY_SESSION and GROQ_API_KEY_BACKGROUND in your .env file."
+        )
 
     payload = {
-        "model": MODEL_NAME,
-        "messages": messages,
-        "max_tokens": 90 if is_safety else 150,
-        "temperature": 0.25 if is_safety else 0.5,
+        "model":       model,
+        "messages":    messages,
+        "max_tokens":  max_tokens,
+        "temperature": temperature,
     }
 
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                GROQ_URL,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                timeout=60
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type":  "application/json",
+    }
+
+    last_error: Optional[Exception] = None
+
+    for attempt in range(1, _MAX_RETRIES + 1):
+        t0 = time.perf_counter()
+
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                response = await client.post(
+                    GROQ_URL,
+                    json=payload,
+                    headers=headers,
+                )
+
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+
+            # ── 200 OK ───────────────────────────────────────────────────────
+            if response.status_code == 200:
+                data  = response.json()
+                raw   = data["choices"][0]["message"]["content"].strip()
+                usage = data.get("usage", {})
+                logger.info(
+                    f"Groq [{task_label}] 200 OK | "
+                    f"model={model} temp={temperature} "
+                    f"in={usage.get('prompt_tokens','?')} "
+                    f"out={usage.get('completion_tokens','?')} tokens | "
+                    f"{elapsed_ms:.0f}ms | attempt={attempt}"
+                )
+                return raw
+
+            # ── Non-retryable: authentication ────────────────────────────────
+            elif response.status_code == 401:
+                logger.error(
+                    f"Groq 401 Unauthorized [{task_label}]. "
+                    f"API key is invalid or has been revoked. "
+                    f"Update GROQ_API_KEY_SESSION / GROQ_API_KEY_BACKGROUND."
+                )
+                raise RuntimeError("Groq API key rejected — 401 Unauthorized")
+
+            # ── Non-retryable: bad request ────────────────────────────────────
+            elif response.status_code == 400:
+                body = response.text[:400]
+                logger.error(
+                    f"Groq 400 Bad Request [{task_label}]: {body}"
+                )
+                raise RuntimeError(f"Groq rejected the request (400): {body}")
+
+            # ── Retryable: rate limit or server error ─────────────────────────
+            elif response.status_code in _RETRY_CODES:
+                delay = _RETRY_BASE_SECS * (2 ** (attempt - 1))
+                logger.warning(
+                    f"Groq {response.status_code} [{task_label}] "
+                    f"(attempt {attempt}/{_MAX_RETRIES}). "
+                    f"Retrying in {delay:.1f}s."
+                )
+                last_error = RuntimeError(
+                    f"Groq {response.status_code}: {response.text[:100]}"
+                )
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(delay)
+
+            # ── Unexpected status code ────────────────────────────────────────
+            else:
+                logger.error(
+                    f"Groq unexpected {response.status_code} [{task_label}]: "
+                    f"{response.text[:200]}"
+                )
+                raise RuntimeError(
+                    f"Groq returned unexpected status {response.status_code}"
+                )
+
+        except (httpx.TimeoutException, httpx.ConnectError) as exc:
+            delay = _RETRY_BASE_SECS * (2 ** (attempt - 1))
+            logger.warning(
+                f"Groq network error [{task_label}] "
+                f"(attempt {attempt}/{_MAX_RETRIES}): {type(exc).__name__}. "
+                f"Retrying in {delay:.1f}s."
             )
-            response.raise_for_status()
-            data = response.json()
-            raw = data["choices"][0]["message"]["content"].strip()
+            last_error = exc
+            if attempt < _MAX_RETRIES:
+                await asyncio.sleep(delay)
 
-            if not raw:
-                return {
-                    "next_speaker": decision.get("target"),
-                    "message": decision["system_message"]
-                }
+        except RuntimeError:
+            raise   # Non-retryable — surface immediately
 
-            message = clean_generation(raw)
-            message = sanitize_response(message)
+    # All retries exhausted
+    raise RuntimeError(
+        f"Groq API failed after {_MAX_RETRIES} attempts [{task_label}]. "
+        f"Last error: {last_error}"
+    )
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PUBLIC FUNCTION 1 — LIVE SESSION RESPONSE
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def generate_session_response(
+    name_a:            str,
+    name_b:            str,
+    recent_messages:   list,
+    analysis:          dict,
+    decision:          dict,
+    partner_profile_a: Optional[str] = None,
+    partner_profile_b: Optional[str] = None,
+    session_insight:   Optional[str] = None,
+) -> dict:
+    """
+    The primary function called by session_manager.py on every user message.
+
+    Takes the complete context assembled by the session manager, builds
+    the prompt, calls the API with the correct parameters for this action,
+    and returns a clean response dict.
+
+    Args:
+        name_a:             Partner A's display name.
+        name_b:             Partner B's display name.
+        recent_messages:    List of recent ChatMessage ORM objects.
+                            Passed to build_prompt() for conversation context.
+        analysis:           Enriched analysis dict from ai/analysis.py.
+                            Used for safety temperature override.
+        decision:           Routing decision dict from ai/mediator_logic.py.
+                            Required keys: action, target, speaker, quote,
+                            feeling, system_message, confidence.
+        partner_profile_a:  Optional pre-session profile for Partner A.
+                            Generated by intake_analyzer.py. Injected into
+                            the therapist briefing section of the prompt.
+        partner_profile_b:  Optional pre-session profile for Partner B.
+        session_insight:    Optional summary from the previous session.
+                            Generated by session_summarizer.py.
+
+    Returns:
+        {
+            "next_speaker":         "a" | "b" | "both",
+            "message":              str,   clean response text
+            "llm":                  bool,  True if LLM was called, False if fallback
+            "llm_suggested_target": str,   who the LLM actually addressed
+        }
+    """
+    action          = decision.get("action", "resume_guidance")
+    decision_target = decision.get("target", "a")
+
+    # ── Assemble prompt ───────────────────────────────────────────────────────
+    prompt = build_prompt(
+        name_a            = name_a,
+        name_b            = name_b,
+        decision          = decision,
+        recent_messages   = recent_messages,
+        partner_profile_a = partner_profile_a,
+        partner_profile_b = partner_profile_b,
+        session_insight   = session_insight,
+    )
+
+    # ── Calibrate parameters ──────────────────────────────────────────────────
+    temperature = get_temperature(action)
+    max_tokens  = get_max_tokens(action)
+
+    # Safety override: analysis independently confirms danger →
+    # clamp temperature to ensure firm, predictable output
+    is_confirmed_danger = (
+        action in {"safety_intervention", "crisis_self_harm"}
+        or (analysis.get("is_abusive") and analysis.get("toxicity", 0) >= 4)
+        or analysis.get("crisis") in {"self_harm", "harm_to_other"}
+    )
+    if is_confirmed_danger:
+        temperature = min(temperature, 0.20)
+
+    # ── Build messages payload ────────────────────────────────────────────────
+    messages_payload = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user",   "content": prompt},
+    ]
+
+    # ── Call API ──────────────────────────────────────────────────────────────
+    try:
+        raw = await _call_groq(
+            messages    = messages_payload,
+            model       = SESSION_MODEL,
+            temperature = temperature,
+            max_tokens  = max_tokens,
+            api_key     = GROQ_API_KEY_SESSION,
+            task_label  = action,
+        )
+
+        cleaned = _clean_response(raw)
+
+        if not cleaned:
+            logger.warning(
+                f"LLM returned empty or uncleanable response for action "
+                f"'{action}'. Using fallback."
+            )
+            cleaned = _get_fallback(action, decision)
             return {
-                "next_speaker": decision.get("target"),
-                "message": message
+                "next_speaker":         decision_target,
+                "message":              cleaned,
+                "llm":                  False,
+                "llm_suggested_target": decision_target,
             }
 
-    except Exception as e:
-        print(f"Groq error: {type(e).__name__}: {e}")
-        try:
-            print("STATUS CODE:", response.status_code)
-            print("RESPONSE BODY:", response.text)
-        except NameError:
-            print("No response object available")
-        import traceback
-        traceback.print_exc()
+        # ── Detect who was actually addressed ─────────────────────────────────
+        actual_target = _detect_addressed_partner(
+            text            = cleaned,
+            name_a          = name_a,
+            name_b          = name_b,
+            decision_target = decision_target,
+        )
+
         return {
-            "next_speaker": decision.get("target"),
-            "message": decision.get("system_message", "I'm here. Take your time.")
+            "next_speaker":         actual_target,
+            "message":              cleaned,
+            "llm":                  True,
+            "llm_suggested_target": actual_target,
         }
+
+    except Exception as exc:
+        logger.error(
+            f"generate_session_response failed for action '{action}': {exc}",
+            exc_info=True,
+        )
+        return {
+            "next_speaker":         decision_target,
+            "message":              _get_fallback(action, decision),
+            "llm":                  False,
+            "llm_suggested_target": decision_target,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PUBLIC FUNCTION 2 — BACKGROUND TASK RESPONSE
+#
+# Used for intake analysis and session summarisation.
+# Runs on GROQ_API_KEY_BACKGROUND so background work never consumes
+# the session key's rate limit when live sessions are active.
+#
+# Background tasks failing must NEVER crash the session — both callers
+# (intake_analyzer.py and session_summarizer.py) check for empty return.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def generate_background_response(
+    system_prompt: str,
+    user_prompt:   str,
+    task_label:    str = "background",
+) -> str:
+    """
+    Sends a background LLM task to Groq and returns the raw response text.
+
+    Used by:
+        ai/intake_analyzer.py      → generate pre-session partner profiles
+        ai/session_summarizer.py   → generate post-session therapeutic insights
+
+    Args:
+        system_prompt: System role content — clinical context and instructions.
+        user_prompt:   User role content — intake text or conversation transcript.
+        task_label:    Descriptive label for logging.
+
+    Returns:
+        Raw LLM response string, unstripped.
+        Returns empty string on failure — callers must handle this gracefully.
+    """
+    messages_payload = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user",   "content": user_prompt},
+    ]
+
+    # Background tasks need consistency, not creativity
+    temperature = 0.30
+    max_tokens  = get_max_tokens("_intake_analysis")
+
+    try:
+        raw = await _call_groq(
+            messages    = messages_payload,
+            model       = BACKGROUND_MODEL,
+            temperature = temperature,
+            max_tokens  = max_tokens,
+            api_key     = GROQ_API_KEY_BACKGROUND,
+            task_label  = task_label,
+        )
+        return raw.strip()
+
+    except Exception as exc:
+        logger.error(
+            f"generate_background_response failed [{task_label}]: {exc}",
+            exc_info=True,
+        )
+        # Empty string signals failure to the caller — session continues
+        return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PUBLIC FUNCTION 3 — DYNAMIC SESSION OPENING
+#
+# Phase 1: Hardcoded intro string in session_manager.py
+# Phase 2: AI-generated personalised opening using both partner names,
+#          the session style, and the profiles from intake analysis.
+#
+# The opening message sets the entire tone of the session.
+# It must feel warm, unhurried, and safe — not scripted.
+#
+# A static fallback is always available so session startup never hangs
+# if the API is slow or unavailable.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_OPENING_SYSTEM_PROMPT = """\
+You are Alinda, a warm and experienced couples mediator opening a session.
+Your opening message sets the tone for everything that follows.
+It must feel genuine, unhurried, and safe.
+
+Write no more than 3 sentences.
+Use both partner names naturally.
+Do not mention what they shared in their intake.
+Do not explain the process or give instructions.
+Simply acknowledge that they are here together and invite the first partner to begin.
+End by asking the first partner — by name — to share what brought them here.
+Only output the spoken words. Nothing else.
+"""
+
+_STYLE_GUIDANCE: dict[str, str] = {
+    "gentle":    "They may be nervous or fragile. Be especially soft and unhurried.",
+    "direct":    "They want to move forward. Be warm but efficient.",
+    "practical": "They value clarity. Acknowledge the difficulty briefly and invite action.",
+    "balanced":  "Trust them to set the pace. Be warm and open.",
+}
+
+
+async def generate_session_opening(
+    name_a:            str,
+    name_b:            str,
+    session_style:     str = "balanced",
+    partner_profile_a: Optional[str] = None,
+    partner_profile_b: Optional[str] = None,
+) -> str:
+    """
+    Generates a personalised, dynamic opening message for the session.
+
+    Called by session_manager.py when both intakes are submitted and
+    the session transitions to ready_for_session.
+
+    Profiles are used to calibrate tone — never referenced directly.
+    The opening never reveals what either partner said in their intake.
+
+    Args:
+        name_a:             Partner A's name. Alinda invites them to speak first.
+        name_b:             Partner B's name.
+        session_style:      "gentle", "direct", "practical", or "balanced".
+        partner_profile_a:  Optional profile from intake_analyzer.py.
+        partner_profile_b:  Optional profile for Partner B.
+
+    Returns:
+        Clean opening message string.
+        Falls back to a warm static message on failure — session never hangs.
+    """
+    # Static fallback — always available, used if generation fails
+    static_fallback = (
+        f"Hello {name_a} and {name_b}.\n\n"
+        f"Thank you both for being here. This space is yours — "
+        f"meant for each of you to feel heard, without interruption or judgement.\n\n"
+        f"{name_a}, would you like to begin by sharing what brought you both here today?"
+    )
+
+    style_note = _STYLE_GUIDANCE.get(session_style, _STYLE_GUIDANCE["balanced"])
+
+    # Therapist briefing — tone calibration only, never content
+    briefing_lines: list[str] = []
+    if partner_profile_a:
+        briefing_lines.append(f"{name_a}: {partner_profile_a.strip()}")
+    if partner_profile_b:
+        briefing_lines.append(f"{name_b}: {partner_profile_b.strip()}")
+
+    briefing_block = ""
+    if briefing_lines:
+        briefing_block = (
+            "\n\nTHERAPIST NOTE (use for tone calibration only — "
+            "never reference or reveal this):\n"
+            + "\n".join(briefing_lines)
+        )
+
+    user_prompt = (
+        f"Open a session with {name_a} and {name_b}.\n"
+        f"Style: {style_note}"
+        f"{briefing_block}\n\n"
+        f"After welcoming them, invite {name_a} to begin by sharing "
+        f"what brought them here today."
+    )
+
+    messages_payload = [
+        {"role": "system", "content": _OPENING_SYSTEM_PROMPT},
+        {"role": "user",   "content": user_prompt},
+    ]
+
+    try:
+        raw = await _call_groq(
+            messages    = messages_payload,
+            model       = SESSION_MODEL,
+            temperature = 0.65,  # Warmer than session — first impression matters
+            max_tokens  = 160,
+            api_key     = GROQ_API_KEY_SESSION,
+            task_label  = "session_opening",
+        )
+        cleaned = _clean_response(raw)
+        return cleaned if cleaned else static_fallback
+
+    except Exception as exc:
+        logger.error(f"generate_session_opening failed: {exc}", exc_info=True)
+        return static_fallback
