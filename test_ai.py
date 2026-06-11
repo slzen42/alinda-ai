@@ -19,9 +19,9 @@ import sys
 import traceback
 from pathlib import Path
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # COLOUR OUTPUT — works on all modern terminals including Windows 10+
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class C:
     GREEN  = "\033[92m"
@@ -37,9 +37,9 @@ def warn(msg): print(f"  {C.YELLOW}!{C.RESET} {msg}")
 def info(msg): print(f"    {C.CYAN}{msg}{C.RESET}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # RESULT TRACKER
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 results: dict[str, bool] = {}
 
@@ -50,10 +50,10 @@ def phase(name: str):
     print(f"{C.BOLD}{'─' * 50}{C.RESET}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # PHASE 0 — Environment and model directory check
 # Run this before anything else so you know what files are present.
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 phase("Phase 0 — Environment check")
 
@@ -130,9 +130,9 @@ except Exception as e:
     results["Phase 0"] = False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # PHASE 1 — Classifier singleton
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 phase("Phase 1 — ai.classifier.AlindaClassifier")
 
@@ -249,9 +249,9 @@ except Exception as e:
     results["Phase 1"] = False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # PHASE 2 — Analysis pipeline
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 phase("Phase 2 — ai.analysis.analyze_message")
 
@@ -375,30 +375,279 @@ except Exception as e:
     results["Phase 2"] = False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PHASE 3 — PLACEHOLDER (add as you write each new file)
-#
-# When you finish prompts.py, add:
-#
-# phase("Phase 3 — ai.prompts")
-# try:
-#     from ai.prompts import (
-#         build_prompt, SYSTEM_PROMPT, get_action_guidance,
-#         build_intake_analysis_prompt, build_session_summary_prompt,
-#         get_temperature, get_max_tokens
-#     )
-#     # ... tests here
-#     results["Phase 3"] = True
-# except Exception as e:
-#     fail(f"Phase 3 crashed: {e}")
-#     results["Phase 3"] = False
-#
-# ─────────────────────────────────────────────────────────────────────────────
+
+# PHASE 3 — Prompts module
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+phase("Phase 3 — ai.prompts")
+
+try:
+    from ai.prompts import (
+        SESSION_MODEL,
+        BACKGROUND_MODEL,
+        CONTEXT_WINDOW,
+        TEMPERATURES,
+        MAX_TOKENS,
+        SYSTEM_PROMPT,
+        get_temperature,
+        get_max_tokens,
+        get_action_guidance,
+        build_prompt,
+        build_intake_analysis_prompt,
+        build_session_summary_prompt,
+    )
+
+    # ── Constants ─────────────────────────────────────────────────────────────
+    if isinstance(SESSION_MODEL, str) and SESSION_MODEL:
+        ok(f"SESSION_MODEL defined: {SESSION_MODEL}")
+    else:
+        fail("SESSION_MODEL is missing or empty")
+
+    if isinstance(BACKGROUND_MODEL, str) and BACKGROUND_MODEL:
+        ok(f"BACKGROUND_MODEL defined: {BACKGROUND_MODEL}")
+    else:
+        fail("BACKGROUND_MODEL is missing or empty")
+
+    if isinstance(CONTEXT_WINDOW, int) and CONTEXT_WINDOW > 0:
+        ok(f"CONTEXT_WINDOW defined: {CONTEXT_WINDOW}")
+    else:
+        fail(f"CONTEXT_WINDOW invalid: {CONTEXT_WINDOW}")
+
+    # ── System prompt ─────────────────────────────────────────────────────────
+    if isinstance(SYSTEM_PROMPT, str) and len(SYSTEM_PROMPT) > 200:
+        ok(f"SYSTEM_PROMPT present ({len(SYSTEM_PROMPT)} characters)")
+    else:
+        fail(f"SYSTEM_PROMPT too short or missing ({len(SYSTEM_PROMPT)} chars)")
+
+    required_phrases = [
+        "Alinda",
+        "PARTICIPATION BALANCE",
+        "1-2 sentences",
+    ]
+    for phrase in required_phrases:
+        if phrase in SYSTEM_PROMPT:
+            ok(f"SYSTEM_PROMPT contains required phrase: '{phrase}'")
+        else:
+            fail(f"SYSTEM_PROMPT missing required phrase: '{phrase}'")
+
+    # ── Temperatures ──────────────────────────────────────────────────────────
+    known_actions = [
+        "explore", "validate", "reflect", "reframe", "deescalate",
+        "affirm_progress", "repair_acknowledgement", "resume_guidance",
+        "free_chat_invite", "cooldown_start", "safety_intervention",
+        "crisis_self_harm", "repair_required", "acknowledge_mediator",
+        "acknowledge_refusal", "redirect_demand", "crisis_resume",
+        "suggest_framework", "idle_redirect",
+    ]
+
+    temp_errors = []
+    for action in known_actions:
+        temp = get_temperature(action)
+        if not isinstance(temp, float) or not (0.0 <= temp <= 1.0):
+            temp_errors.append(f"{action}: {temp}")
+    if not temp_errors:
+        ok(f"get_temperature() returns valid floats for all {len(known_actions)} actions")
+    else:
+        fail(f"Temperature errors: {temp_errors}")
+
+    # Safety actions must be stricter than exploratory actions
+    if get_temperature("safety_intervention") < get_temperature("explore"):
+        ok("Safety actions have lower temperature than exploratory actions")
+    else:
+        fail("Safety action temperature should be lower than explore temperature")
+
+    # ── Max tokens ────────────────────────────────────────────────────────────
+    token_errors = []
+    for action in known_actions:
+        tokens = get_max_tokens(action)
+        if not isinstance(tokens, int) or tokens <= 0:
+            token_errors.append(f"{action}: {tokens}")
+    if not token_errors:
+        ok(f"get_max_tokens() returns valid ints for all {len(known_actions)} actions")
+    else:
+        fail(f"Token limit errors: {token_errors}")
+
+    # Safety actions must be shorter than standard actions
+    if get_max_tokens("safety_intervention") < get_max_tokens("explore"):
+        ok("Safety actions have lower token limit than exploratory actions")
+    else:
+        fail("Safety action token limit should be lower than explore limit")
+
+    # ── Action guidance ───────────────────────────────────────────────────────
+    guidance_errors = []
+    for action in known_actions:
+        guidance = get_action_guidance(action)
+        if not isinstance(guidance, str) or len(guidance) < 20:
+            guidance_errors.append(action)
+    if not guidance_errors:
+        ok(f"get_action_guidance() returns valid strings for all {len(known_actions)} actions")
+    else:
+        fail(f"Actions with missing/short guidance: {guidance_errors}")
+
+    # Unknown action should return a fallback, not crash
+    fallback = get_action_guidance("totally_unknown_action_xyz")
+    if isinstance(fallback, str) and len(fallback) > 0:
+        ok("get_action_guidance() returns fallback string for unknown actions")
+    else:
+        fail("get_action_guidance() failed on unknown action")
+
+    # ── build_prompt() ────────────────────────────────────────────────────────
+
+    # Build a minimal fake decision dict
+    fake_decision = {
+        "speaker": "a",
+        "quote": "I feel like you never listen to me",
+        "feeling": "hurt",
+        "action": "explore",
+        "target": "a",
+        "system_message": "",
+        "confidence": "high",
+    }
+
+    # Build a minimal fake message list (dicts with attributes)
+    class FakeMsg:
+        def __init__(self, sender, content):
+            self.sender  = sender
+            self.content = content
+
+    fake_messages = [
+        FakeMsg("ai", "Hello, would you like to begin?"),
+        FakeMsg("a",  "I feel like you never listen to me"),
+    ]
+
+    # Without optional profile/insight args
+    prompt_basic = build_prompt("Sky", "Cloud", fake_decision, fake_messages)
+    if isinstance(prompt_basic, str) and len(prompt_basic) > 50:
+        ok(f"build_prompt() returns string ({len(prompt_basic)} chars) without profiles")
+    else:
+        fail("build_prompt() returned empty or non-string without profiles")
+
+    if "Sky" in prompt_basic and "Cloud" in prompt_basic:
+        ok("build_prompt() correctly includes partner names")
+    else:
+        fail("build_prompt() does not include partner names")
+
+    if fake_decision["quote"] in prompt_basic:
+        ok("build_prompt() correctly includes the quote")
+    else:
+        fail("build_prompt() does not include the quote")
+
+    if get_action_guidance("explore") in prompt_basic:
+        ok("build_prompt() correctly includes action guidance")
+    else:
+        fail("build_prompt() does not include action guidance")
+
+    # With optional profile args
+    prompt_with_profiles = build_prompt(
+        "Sky", "Cloud", fake_decision, fake_messages,
+        partner_profile_a="Sky tends to intellectualise emotion.",
+        partner_profile_b="Cloud tends to withdraw under pressure.",
+        session_insight="Last session: main theme was trust.",
+    )
+    if "THERAPIST BRIEFING" in prompt_with_profiles:
+        ok("build_prompt() includes therapist briefing when profiles are provided")
+    else:
+        fail("build_prompt() did not include therapist briefing with profiles")
+
+    if "Sky tends to intellectualise" in prompt_with_profiles:
+        ok("build_prompt() correctly embeds profile_a in briefing")
+    else:
+        fail("build_prompt() did not embed profile_a in briefing")
+
+    # Verify profiles are NOT shown when None
+    if "THERAPIST BRIEFING" not in prompt_basic:
+        ok("build_prompt() correctly omits briefing when no profiles provided")
+    else:
+        fail("build_prompt() included briefing block even with no profiles")
+
+    # ── build_intake_analysis_prompt() ────────────────────────────────────────
+    intake_system, intake_user = build_intake_analysis_prompt(
+        name="Sky",
+        intake_text="I feel like my partner never listens.\nI wish they understood how lonely I feel.",
+    )
+
+    if isinstance(intake_system, str) and len(intake_system) > 50:
+        ok(f"build_intake_analysis_prompt() system prompt valid ({len(intake_system)} chars)")
+    else:
+        fail("build_intake_analysis_prompt() system prompt invalid")
+
+    if isinstance(intake_user, str) and "Sky" in intake_user:
+        ok("build_intake_analysis_prompt() user prompt contains partner name")
+    else:
+        fail("build_intake_analysis_prompt() user prompt missing partner name")
+
+    required_sections = [
+        "PRIMARY CONCERN",
+        "COMMUNICATION STYLE",
+        "CORE NEED",
+        "LIKELY TRIGGERS",
+        "WATCH FOR",
+    ]
+    for section in required_sections:
+        if section in intake_user:
+            ok(f"Intake prompt contains section: {section}")
+        else:
+            fail(f"Intake prompt missing section: {section}")
+
+    # ── build_session_summary_prompt() ───────────────────────────────────────
+    summary_system, summary_user = build_session_summary_prompt(
+        name_a="Sky",
+        name_b="Cloud",
+        conversation_text="Sky: I feel ignored.\nAlinda: What does ignored feel like?\nCloud: I didn't mean to.",
+        duration_minutes=45,
+    )
+
+    if isinstance(summary_system, str) and len(summary_system) > 50:
+        ok(f"build_session_summary_prompt() system prompt valid ({len(summary_system)} chars)")
+    else:
+        fail("build_session_summary_prompt() system prompt invalid")
+
+    if isinstance(summary_user, str):
+        ok(f"build_session_summary_prompt() user prompt valid ({len(summary_user)} chars)")
+    else:
+        fail("build_session_summary_prompt() user prompt invalid")
+
+    required_summary_sections = [
+        "KEY THEMES",
+        "BREAKTHROUGH MOMENTS",
+        "UNRESOLVED THREADS",
+        "EMOTIONAL ARC",
+        "RELATIONSHIP DYNAMIC",
+        "CONCRETE COMMITMENT",
+        "RECOMMENDED FOCUS",
+    ]
+    for section in required_summary_sections:
+        if section in summary_user:
+            ok(f"Summary prompt contains section: {section}")
+        else:
+            fail(f"Summary prompt missing section: {section}")
+
+    if "Sky" in summary_user and "Cloud" in summary_user:
+        ok("Summary prompt correctly uses partner names in section headers")
+    else:
+        fail("Summary prompt missing partner names")
+
+    if "45" in summary_user:
+        ok("Summary prompt correctly includes session duration")
+    else:
+        fail("Summary prompt missing session duration")
+
+    results["Phase 3"] = True
+
+except ImportError as e:
+    fail(f"Import error in prompts.py: {e}")
+    info("Check that all functions listed above are defined and exported.")
+    traceback.print_exc()
+    results["Phase 3"] = False
+except Exception as e:
+    fail(f"Phase 3 crashed: {e}")
+    traceback.print_exc()
+    results["Phase 3"] = False
+
+
+
 # SUMMARY
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 print(f"\n{C.BOLD}{'═' * 50}{C.RESET}")
 print(f"{C.BOLD}  TEST SUMMARY{C.RESET}")
