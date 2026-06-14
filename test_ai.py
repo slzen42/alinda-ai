@@ -829,6 +829,184 @@ except Exception as e:
     traceback.print_exc()
     results["Phase 4"] = False
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 5 — Mediator logic
+# ─────────────────────────────────────────────────────────────────────────────
+
+phase("Phase 5 — ai.mediator_logic")
+
+try:
+    from ai.mediator_logic import (
+        decide_mediation,
+        _load_ledger,
+        _update_ledger,
+        _compute_regulation_state,
+        _compute_session_temperature,
+        _detect_resolution,
+        FLOODING, WINDOW, WITHDRAWING,
+        _DEFAULT_LEDGER,
+    )
+    from ai.analysis import analyze_message
+
+    # ── Mock session object ───────────────────────────────────────────────────
+    class MockSession:
+        def __init__(self):
+            self.mode                   = "guided"
+            self.message_count          = 5
+            self.last_user_message      = ""
+            self.last_action            = None
+            self.last_target            = None
+            self.last_speaker           = None
+            self.consecutive_turns      = 0
+            self.resume_guidance_index  = 0
+            self.escalation_unresolved  = False
+            self.behavioral_ledger_a    = None
+            self.behavioral_ledger_b    = None
+            self.recent_action_log      = None
+            self.avg_escalation         = 0.0
+            self.avg_vulnerability      = 0.0
+            self._current_text_lower    = ""
+
+    # ── Default ledger structure ──────────────────────────────────────────────
+    ledger = _load_ledger(MockSession(), "a")
+    required_ledger_keys = [
+        "total_messages", "flooding_events", "contempt_events",
+        "trait_probabilities", "confirmed_traits", "avg_escalation",
+    ]
+    missing = [k for k in required_ledger_keys if k not in ledger]
+    if not missing:
+        ok(f"_load_ledger() returns correct structure ({len(ledger)} keys)")
+    else:
+        fail(f"Ledger missing keys: {missing}")
+
+    # ── Regulation state ──────────────────────────────────────────────────────
+    flood_analysis = {"escalation": 8, "toxicity": 4, "is_abusive": True,
+                      "engagement": 5, "contempt": 2}
+    if _compute_regulation_state(flood_analysis, 12) == FLOODING:
+        ok("_compute_regulation_state() correctly identifies FLOODING")
+    else:
+        fail("_compute_regulation_state() failed to identify FLOODING")
+
+    withdraw_analysis = {"escalation": 0, "toxicity": 0, "is_abusive": False,
+                         "engagement": 0, "contempt": 0}
+    if _compute_regulation_state(withdraw_analysis, 2) == WITHDRAWING:
+        ok("_compute_regulation_state() correctly identifies WITHDRAWING")
+    else:
+        fail("_compute_regulation_state() failed to identify WITHDRAWING")
+
+    window_analysis = {"escalation": 2, "toxicity": 0, "is_abusive": False,
+                       "engagement": 3, "contempt": 0}
+    if _compute_regulation_state(window_analysis, 15) == WINDOW:
+        ok("_compute_regulation_state() correctly identifies WINDOW")
+    else:
+        fail("_compute_regulation_state() failed to identify WINDOW")
+
+    # ── Resolution detection ──────────────────────────────────────────────────
+    res_analysis = {"sentiment": 2, "escalation": 0}
+    if _detect_resolution("i think we're okay now", res_analysis):
+        ok("_detect_resolution() correctly detects resolution signal")
+    else:
+        fail("_detect_resolution() failed to detect 'i think we're okay now'")
+
+    no_res_analysis = {"sentiment": -2, "escalation": 5}
+    if not _detect_resolution("i think we're okay now", no_res_analysis):
+        ok("_detect_resolution() correctly rejects resolution with high escalation")
+    else:
+        fail("_detect_resolution() incorrectly detected resolution in angry message")
+
+    # ── decide_mediation() — crisis detection (Level 1) ──────────────────────
+    session = MockSession()
+    session.last_user_message = "I want to kill myself"
+    crisis_analysis = analyze_message("I want to kill myself")
+    crisis_analysis["crisis"] = "self_harm"   # Ensure it's set
+
+    decision = decide_mediation(session, crisis_analysis, "a", "Sky", "Cloud")
+
+    if decision["action"] == "crisis_self_harm":
+        ok("Level 1: Crisis self_harm correctly routed to crisis_self_harm action")
+    else:
+        fail(f"Level 1: Expected crisis_self_harm, got {decision['action']}")
+
+    if decision["mode"] == "crisis_pause":
+        ok("Level 1: Mode correctly set to crisis_pause")
+    else:
+        fail(f"Level 1: Mode should be crisis_pause, got {decision['mode']}")
+
+    if decision["_level"] == 1:
+        ok("Level 1: _level field correctly reports 1")
+    else:
+        fail(f"Level 1: _level should be 1, got {decision['_level']}")
+
+    # ── Level 2: Safety intervention on character attack ──────────────────────
+    session2 = MockSession()
+    session2.last_user_message = "I hate you, you're disgusting"
+    attack_analysis = analyze_message("I hate you, you're disgusting")
+    attack_analysis["contempt"] = 5
+    attack_analysis["escalation_intent"] = "character_attack"
+    attack_analysis["is_abusive"] = True
+    attack_analysis["crisis"] = "none"
+
+    decision2 = decide_mediation(session2, attack_analysis, "a", "Sky", "Cloud")
+    if decision2["action"] in {"safety_intervention", "deescalate"}:
+        ok(f"Level 2: Character attack routed to {decision2['action']}")
+    else:
+        fail(f"Level 2: Expected safety_intervention/deescalate, got {decision2['action']}")
+
+    # ── Required fields in output ─────────────────────────────────────────────
+    required_keys = [
+        "action", "target", "speaker", "quote", "feeling",
+        "system_message", "confidence", "mode", "next_speaker",
+        "dialogue_stage", "_level", "_behavioral_update",
+        "_regulation_sender", "_session_temp"
+    ]
+    missing_keys = [k for k in required_keys if k not in decision]
+    if not missing_keys:
+        ok(f"decide_mediation() output contains all {len(required_keys)} required keys")
+    else:
+        fail(f"decide_mediation() output missing keys: {missing_keys}")
+
+    # ── Behavioral update is included ─────────────────────────────────────────
+    bu = decision.get("_behavioral_update", {})
+    if "behavioral_ledger_a" in bu:
+        ok("_behavioral_update contains ledger for sender")
+    else:
+        fail("_behavioral_update missing ledger key")
+
+    # ── System message is a non-empty string ──────────────────────────────────
+    sm = decision.get("system_message", "")
+    if isinstance(sm, str) and len(sm) > 20:
+        ok(f"system_message is non-empty ({len(sm)} chars)")
+    else:
+        fail(f"system_message is empty or too short: {sm!r}")
+
+    # ── Dialogue stage is set ─────────────────────────────────────────────────
+    ds = decision.get("dialogue_stage", "")
+    if isinstance(ds, str) and ds:
+        ok(f"dialogue_stage is set: '{ds}'")
+    else:
+        fail("dialogue_stage is empty")
+
+    # ── Standard message routing (level 4) ───────────────────────────────────
+    session3 = MockSession()
+    session3.last_user_message = "I feel like Cloud never really listens to me"
+    normal_analysis = analyze_message("I feel like Cloud never really listens to me")
+
+    decision3 = decide_mediation(session3, normal_analysis, "a", "Sky", "Cloud")
+    ok(f"Standard message: action={decision3['action']} "
+       f"target={decision3['target']} level={decision3['_level']}")
+
+    results["Phase 5"] = True
+
+except ImportError as e:
+    fail(f"Import error in mediator_logic.py: {e}")
+    traceback.print_exc()
+    results["Phase 5"] = False
+except Exception as e:
+    fail(f"Phase 5 crashed: {e}")
+    traceback.print_exc()
+    results["Phase 5"] = False
+
 # SUMMARY
 
 
