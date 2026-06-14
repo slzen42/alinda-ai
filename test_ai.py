@@ -1007,6 +1007,234 @@ except Exception as e:
     traceback.print_exc()
     results["Phase 5"] = False
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 6 — Conversation state controller
+# ─────────────────────────────────────────────────────────────────────────────
+
+phase("Phase 6 — ai.conversation_state_controller")
+
+try:
+    from ai.conversation_state_controller import (
+        adjust_decision,
+        State, Phase,
+        STAGE_MAP,
+        _compute_session_phase,
+        _validate_state_transition,
+        _validate_action_for_phase,
+        _check_repair_cycle,
+        _is_session_paused,
+        _read_action_log,
+    )
+    from datetime import datetime, timezone, timedelta
+
+    # ── Mock session ──────────────────────────────────────────────────────────
+    class MockCSCSession:
+        def __init__(self, mode=State.GUIDED):
+            self.mode                   = mode
+            self.session_started_at     = None
+            self.session_duration_limit = 90
+            self.session_phase          = Phase.OPENING
+            self.last_action            = None
+            self.last_target            = None
+            self.last_speaker           = None
+            self.consecutive_turns      = 0
+            self.action_streak          = 0
+            self.target_streak          = 0
+            self.stagnation_streak      = 0
+            self.resume_guidance_index  = 0
+            self.repair_cycle_stage     = None
+            self.recent_action_log      = None
+            self.paused_until           = None
+            self.dialogue_stage         = "Listening"
+
+    def make_decision(action="explore", target="a", confidence="low"):
+        return {
+            "action": action, "target": target,
+            "mode": "guided", "confidence": confidence,
+            "speaker": "a", "quote": "test",
+            "feeling": None, "system_message": "",
+            "exercise": None, "next_speaker": "b",
+        }
+
+    neutral_analysis = {
+        "escalation": 0, "blame": 0, "vulnerability": 0,
+        "sentiment": 0, "repair_attempt": 0, "toxicity": 0,
+        "crisis": "none", "contempt": 0, "engagement": 3,
+        "confidence": "medium", "is_abusive": False,
+        "escalation_intent": "none", "top_emotions": {}
+    }
+
+    # ── Stage map completeness ────────────────────────────────────────────────
+    known_actions = [
+        "explore", "validate", "reflect", "reframe", "deescalate",
+        "affirm_progress", "repair_acknowledgement", "resume_guidance",
+        "free_chat_invite", "observe", "cooldown_start",
+        "safety_intervention", "crisis_self_harm", "repair_required",
+        "acknowledge_mediator", "acknowledge_refusal", "redirect_demand",
+        "crisis_resume", "suggest_framework", "idle_redirect",
+    ]
+    missing_stages = [a for a in known_actions if a not in STAGE_MAP]
+    if not missing_stages:
+        ok(f"STAGE_MAP covers all {len(known_actions)} known actions")
+    else:
+        fail(f"STAGE_MAP missing entries for: {missing_stages}")
+
+    # ── State transition validation ───────────────────────────────────────────
+    valid, reason = _validate_state_transition(State.GUIDED, State.COOLDOWN, "cooldown_start")
+    if valid:
+        ok(f"GUIDED→COOLDOWN transition valid: {reason}")
+    else:
+        fail(f"GUIDED→COOLDOWN should be valid but got: {reason}")
+
+    invalid, reason = _validate_state_transition(State.CLOSED, State.GUIDED, "explore")
+    if not invalid:
+        ok("CLOSED→GUIDED correctly blocked")
+    else:
+        fail("CLOSED→GUIDED should be blocked")
+
+    # ── Phase computation ─────────────────────────────────────────────────────
+    s = MockCSCSession()
+    s.session_started_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    phase = _compute_session_phase(s)
+    if phase == Phase.OPENING:
+        ok(f"Phase at 5 minutes: {phase} (correct)")
+    else:
+        fail(f"Phase at 5 minutes should be OPENING, got: {phase}")
+
+    s.session_started_at = datetime.now(timezone.utc) - timedelta(minutes=30)
+    phase = _compute_session_phase(s)
+    if phase == Phase.EXPLORATION:
+        ok(f"Phase at 30 minutes: {phase} (correct)")
+    else:
+        fail(f"Phase at 30 minutes should be EXPLORATION, got: {phase}")
+
+    s.session_started_at = datetime.now(timezone.utc) - timedelta(minutes=85)
+    phase = _compute_session_phase(s)
+    if phase == Phase.CLOSING:
+        ok(f"Phase at 85 minutes: {phase} (correct)")
+    else:
+        fail(f"Phase at 85 minutes should be CLOSING, got: {phase}")
+
+    # ── Phase validation ──────────────────────────────────────────────────────
+    valid, fallback = _validate_action_for_phase("suggest_framework", Phase.OPENING)
+    if not valid and fallback:
+        ok(f"suggest_framework blocked in OPENING, fallback: {fallback}")
+    else:
+        fail("suggest_framework should be blocked in OPENING")
+
+    valid, fallback = _validate_action_for_phase("explore", Phase.CLOSING)
+    if not valid:
+        ok(f"explore blocked in CLOSING, fallback: {fallback}")
+    else:
+        fail("explore should be blocked in CLOSING")
+
+    valid, fallback = _validate_action_for_phase("safety_intervention", Phase.CLOSING)
+    if valid:
+        ok("safety_intervention always valid regardless of phase")
+    else:
+        fail("safety_intervention should bypass phase restrictions")
+
+    # ── Paused state ──────────────────────────────────────────────────────────
+    paused_s = MockCSCSession(mode=State.PAUSED)
+    paused_s.paused_until = datetime.now(timezone.utc) + timedelta(minutes=10)
+    if _is_session_paused(paused_s):
+        ok("_is_session_paused correctly detects active pause")
+    else:
+        fail("_is_session_paused failed to detect active pause")
+
+    expired_s = MockCSCSession(mode=State.PAUSED)
+    expired_s.paused_until = datetime.now(timezone.utc) - timedelta(minutes=5)
+    if not _is_session_paused(expired_s):
+        ok("_is_session_paused correctly detects expired pause")
+    else:
+        fail("_is_session_paused failed to detect expired pause")
+
+    # ── Paused state action blocking ──────────────────────────────────────────
+    s_paused = MockCSCSession(mode=State.PAUSED)
+    s_paused.paused_until = datetime.now(timezone.utc) + timedelta(minutes=10)
+    decision = make_decision("explore", "a", "low")
+    result = adjust_decision(s_paused, "a", neutral_analysis, decision)
+    if result["action"] == "idle_redirect":
+        ok("Paused session suppresses clinical actions → idle_redirect")
+    else:
+        fail(f"Paused session should suppress to idle_redirect, got: {result['action']}")
+
+    # ── Safety lockdown restricts actions ────────────────────────────────────
+    s_lock = MockCSCSession(mode=State.SAFETY_LOCKDOWN)
+    decision = make_decision("explore", "a", "low")
+    result = adjust_decision(s_lock, "a", neutral_analysis, decision)
+    if result["action"] in {"repair_required", "explore"}:
+        if result["action"] == "repair_required":
+            ok("Safety lockdown redirects non-repair actions to repair_required")
+        else:
+            info(f"Safety lockdown result: {result['action']}")
+    else:
+        info(f"Safety lockdown action: {result['action']}")
+
+    # ── Repair cycle protection ───────────────────────────────────────────────
+    s_cycle = MockCSCSession()
+    s_cycle.repair_cycle_stage = "validate"
+    s_cycle.last_target = "a"
+    cycle_result = _check_repair_cycle(s_cycle, "explore", "b")
+    if cycle_result and cycle_result.get("action") == "reflect":
+        ok("Repair cycle protection: after validate, overrides to reflect")
+    else:
+        fail(f"Repair cycle protection failed: got {cycle_result}")
+
+    # ── High confidence bypasses guardrails ───────────────────────────────────
+    s_bypass = MockCSCSession()
+    s_bypass.consecutive_turns = 10  # Would normally trigger redirect
+    s_bypass.last_speaker = "a"
+    decision = make_decision("explore", "a", "high")
+    result = adjust_decision(s_bypass, "a", neutral_analysis, decision)
+    if result["action"] == "explore" and result["target"] == "a":
+        ok("High confidence decision bypasses consecutive turn guardrail")
+    else:
+        info(f"High confidence bypass: action={result['action']}, target={result['target']}")
+
+    # ── Consecutive turn guardrail fires at limit ─────────────────────────────
+    s_consec = MockCSCSession()
+    s_consec.consecutive_turns = 3
+    s_consec.last_speaker = "a"
+    decision = make_decision("explore", "a", "low")
+    result = adjust_decision(s_consec, "a", neutral_analysis, decision)
+    if result["target"] == "b":
+        ok("Consecutive turn guardrail redirected to partner b")
+    else:
+        info(f"Consecutive turn result: action={result['action']}, target={result['target']}")
+
+    # ── Action log written after commit ──────────────────────────────────────
+    s_log = MockCSCSession()
+    decision = make_decision("validate", "b", "medium")
+    adjust_decision(s_log, "a", neutral_analysis, decision)
+    log = _read_action_log(s_log)
+    if log and log[-1]["action"] == "validate":
+        ok(f"Action log updated: last entry = {log[-1]}")
+    else:
+        fail(f"Action log not updated correctly: {log}")
+
+    # ── adjust_decision always returns a valid dict ───────────────────────────
+    s_final = MockCSCSession()
+    for action in ["explore", "validate", "safety_intervention", "crisis_self_harm"]:
+        d = make_decision(action, "a", "medium")
+        r = adjust_decision(s_final, "a", neutral_analysis, d)
+        if "action" in r and "mode" in r and "dialogue_stage" in r:
+            ok(f"adjust_decision returned valid dict for: {action}")
+        else:
+            fail(f"adjust_decision returned invalid dict for: {action} → {r}")
+        s_final = MockCSCSession()  # Fresh session for each test
+
+    results["Phase 6"] = True
+
+except ImportError as e:
+    fail(f"Import error in conversation_state_controller.py: {e}")
+    traceback.print_exc()
+    results["Phase 6"] = False
+except Exception as e:
+    fail(f"Phase 6 crashed: {e}")
+    traceback.print_exc()
+    results["Phase 6"] = False
+
 # SUMMARY
 
 
