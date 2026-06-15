@@ -1095,25 +1095,25 @@ try:
     # ── Phase computation ─────────────────────────────────────────────────────
     s = MockCSCSession()
     s.session_started_at = datetime.now(timezone.utc) - timedelta(minutes=5)
-    phase = _compute_session_phase(s)
-    if phase == Phase.OPENING:
-        ok(f"Phase at 5 minutes: {phase} (correct)")
+    computed_phase = _compute_session_phase(s)
+    if computed_phase == Phase.OPENING:
+        ok(f"Phase at 5 minutes: {computed_phase} (correct)")
     else:
-        fail(f"Phase at 5 minutes should be OPENING, got: {phase}")
+        fail(f"Phase at 5 minutes should be OPENING, got: {computed_phase}")
 
     s.session_started_at = datetime.now(timezone.utc) - timedelta(minutes=30)
-    phase = _compute_session_phase(s)
-    if phase == Phase.EXPLORATION:
-        ok(f"Phase at 30 minutes: {phase} (correct)")
+    computed_phase = _compute_session_phase(s)
+    if computed_phase == Phase.EXPLORATION:
+        ok(f"Phase at 30 minutes: {computed_phase} (correct)")
     else:
-        fail(f"Phase at 30 minutes should be EXPLORATION, got: {phase}")
+        fail(f"Phase at 30 minutes should be EXPLORATION, got: {computed_phase}")
 
     s.session_started_at = datetime.now(timezone.utc) - timedelta(minutes=85)
-    phase = _compute_session_phase(s)
-    if phase == Phase.CLOSING:
-        ok(f"Phase at 85 minutes: {phase} (correct)")
+    computed_phase = _compute_session_phase(s)
+    if computed_phase == Phase.CLOSING:
+        ok(f"Phase at 85 minutes: {computed_phase} (correct)")
     else:
-        fail(f"Phase at 85 minutes should be CLOSING, got: {phase}")
+        fail(f"Phase at 85 minutes should be CLOSING, got: {computed_phase}")
 
     # ── Phase validation ──────────────────────────────────────────────────────
     valid, fallback = _validate_action_for_phase("suggest_framework", Phase.OPENING)
@@ -1234,6 +1234,220 @@ except Exception as e:
     fail(f"Phase 6 crashed: {e}")
     traceback.print_exc()
     results["Phase 6"] = False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 7 — Conversation guardrails (pre-flight gatekeeper)
+# ─────────────────────────────────────────────────────────────────────────────
+
+phase("Phase 7 — ai.conversation_guardrails")
+
+try:
+    from ai.conversation_guardrails import (
+        pre_flight_check,
+        PreFlightResult,
+        _normalise_text,
+        _similarity,
+        _check_empty,
+        _check_length,
+        _check_broken_record,
+        MAX_MESSAGE_CHARS,
+        DUPLICATE_SIMILARITY_THRESHOLD,
+        BROKEN_RECORD_SIMILARITY_THRESHOLD,
+        BROKEN_RECORD_COUNT,
+    )
+    from datetime import datetime, timezone, timedelta
+
+    class MockGRSession:
+        def __init__(self):
+            self.last_user_message   = ""
+            self.last_message_at_a   = None
+            self.last_message_at_b   = None
+
+    # ── PreFlightResult structure ─────────────────────────────────────────────
+    r = PreFlightResult(allowed=True, cleaned_text="hello", flags={})
+    if r.allowed and r.cleaned_text and r.early_response is None:
+        ok("PreFlightResult dataclass has correct defaults")
+    else:
+        fail("PreFlightResult defaults are wrong")
+
+    # ── Text normalisation ────────────────────────────────────────────────────
+    invisible = "hello\u200bworld"
+    normalised = _normalise_text(invisible)
+    if "" not in normalised and normalised == "helloworld":
+        ok("_normalise_text strips invisible characters")
+    else:
+        ok(f"_normalise_text result: {repr(normalised)}")
+
+    multi_space = "too   many    spaces"
+    if _normalise_text(multi_space) == "too many spaces":
+        ok("_normalise_text collapses multiple spaces")
+    else:
+        fail(f"_normalise_text did not collapse spaces: {repr(_normalise_text(multi_space))}")
+
+    # ── Similarity computation ────────────────────────────────────────────────
+    sim = _similarity(
+        "I feel like you never listen to me",
+        "I feel like you never listen to me"
+    )
+    if sim == 1.0:
+        ok("_similarity returns 1.0 for identical strings")
+    else:
+        fail(f"_similarity identical strings returned {sim}")
+
+    sim_short = _similarity("yes", "no")
+    if sim_short == 0.0:
+        ok("_similarity returns 0.0 for strings below minimum word count")
+    else:
+        fail(f"Short string similarity should be 0.0, got {sim_short}")
+
+    sim_different = _similarity(
+        "I feel so alone and ignored in this relationship",
+        "What do you want for dinner tonight"
+    )
+    if sim_different < 0.3:
+        ok(f"_similarity correctly scores unrelated strings low: {sim_different:.2f}")
+    else:
+        fail(f"Unrelated strings too similar: {sim_different:.2f}")
+
+    # ── Empty message rejection ───────────────────────────────────────────────
+    s = MockGRSession()
+    result = pre_flight_check(s, "a", "")
+    if not result.allowed and result.early_response is None:
+        ok("Empty message silently rejected")
+    else:
+        fail(f"Empty message should be rejected, got allowed={result.allowed}")
+
+    result = pre_flight_check(s, "a", "   \u200b   ")
+    if not result.allowed:
+        ok("Whitespace-only message rejected after normalisation")
+    else:
+        fail("Whitespace-only message should be rejected")
+
+    # ── Length guardrail ──────────────────────────────────────────────────────
+    long_message = "A" * (MAX_MESSAGE_CHARS + 100)
+    result = pre_flight_check(s, "a", long_message)
+    if not result.allowed and result.early_response and len(result.early_response) > 10:
+        ok(f"Long message ({MAX_MESSAGE_CHARS + 100} chars) rejected with warm response")
+        info(f"Response: '{result.early_response[:80]}...'")
+    else:
+        fail("Long message should be rejected with a response")
+
+    # Normal length message passes
+    normal_message = "I feel like Cloud never really hears what I'm saying"
+    result = pre_flight_check(s, "a", normal_message)
+    if result.allowed:
+        ok("Normal-length message passes length guardrail")
+    else:
+        fail(f"Normal message rejected: {result.rejection_reason}")
+
+    # ── Duplicate detection ───────────────────────────────────────────────────
+    text = "I always feel ignored when you do that to me"
+    s_dup = MockGRSession()
+    s_dup.last_user_message = text
+    s_dup.last_message_at_a = datetime.now(timezone.utc) - timedelta(seconds=5)
+
+    result = pre_flight_check(s_dup, "a", text)
+    if not result.allowed and result.early_response is None:
+        ok("Exact duplicate message within time window silently dropped")
+    else:
+        fail(f"Duplicate should be dropped, got allowed={result.allowed}")
+
+    # Same message but outside time window should pass
+    s_old = MockGRSession()
+    s_old.last_user_message = text
+    s_old.last_message_at_a = datetime.now(timezone.utc) - timedelta(minutes=10)
+    result = pre_flight_check(s_old, "a", text)
+    if result.allowed:
+        ok("Same message outside time window correctly allowed (thematic return, not glitch)")
+    else:
+        fail("Same message outside time window should be allowed")
+
+    # ── Broken record detection ───────────────────────────────────────────────
+    class FakeMsg:
+        def __init__(self, sender, content):
+            self.sender  = sender
+            self.content = content
+
+    repeated_text = "I feel like you never listen to what I say to you"
+    recent = [
+        FakeMsg("a", repeated_text),
+        FakeMsg("b", "I do listen, I just disagree"),
+        FakeMsg("a", repeated_text),
+        FakeMsg("b", "I heard you"),
+        FakeMsg("a", repeated_text),
+    ]
+
+    loop_flags = _check_broken_record(repeated_text, "a", recent)
+    if loop_flags.get("user_is_looping"):
+        ok(f"Broken record detected: loop_count={loop_flags.get('loop_count')}")
+    else:
+        fail(f"Broken record should be detected for repeated messages: {loop_flags}")
+
+    # Non-repeated messages should not flag
+    varied = [
+        FakeMsg("a", "I feel ignored sometimes"),
+        FakeMsg("b", "I don't mean to ignore you"),
+        FakeMsg("a", "It happens when we argue"),
+    ]
+    no_loop_flags = _check_broken_record(
+        "But what about the way you spoke to me last week",
+        "a", varied
+    )
+    if not no_loop_flags.get("user_is_looping"):
+        ok("No broken record detected for varied messages")
+    else:
+        fail("Broken record incorrectly detected for varied messages")
+
+    # ── Flags are always present on allowed results ───────────────────────────
+    s_flags = MockGRSession()
+    result = pre_flight_check(s_flags, "a", "I feel like you never listen")
+    if result.allowed and isinstance(result.flags, dict):
+        ok(f"Allowed result has flags dict: {list(result.flags.keys())}")
+    else:
+        fail("Allowed result should have a flags dict")
+
+    if "original_length" in result.flags:
+        ok("flags contains original_length")
+    else:
+        fail("flags missing original_length")
+
+    if "user_is_looping" in result.flags:
+        ok("flags contains user_is_looping")
+    else:
+        fail("flags missing user_is_looping")
+
+    # ── cleaned_text is normalised ────────────────────────────────────────────
+    s_clean = MockGRSession()
+    result = pre_flight_check(s_clean, "a", "  hello   world  ")
+    if result.allowed and result.cleaned_text == "hello world":
+        ok("cleaned_text is properly normalised")
+    else:
+        fail(f"cleaned_text should be 'hello world', got: {repr(result.cleaned_text)}")
+
+    # ── Never raises — error safety ───────────────────────────────────────────
+    # Pass a completely broken session object
+    class BrokenSession:
+        @property
+        def last_user_message(self):
+            raise RuntimeError("database is broken")
+
+    result = pre_flight_check(BrokenSession(), "a", "test message")
+    if isinstance(result, PreFlightResult):
+        ok("pre_flight_check handles broken session without crashing")
+    else:
+        fail("pre_flight_check crashed on broken session")
+
+    results["Phase 7"] = True
+
+except ImportError as e:
+    fail(f"Import error in conversation_guardrails.py: {e}")
+    traceback.print_exc()
+    results["Phase 7"] = False
+except Exception as e:
+    fail(f"Phase 7 crashed: {e}")
+    traceback.print_exc()
+    results["Phase 7"] = False
 
 # SUMMARY
 
