@@ -495,6 +495,13 @@ class SessionInsight(Base):
     # What the next session should prioritise.
     recommended_focus = Column(Text, nullable=True)
 
+    # Computed behavioral metrics — symmetry, latency, escalation velocity, repair
+    # efficacy. Entirely deterministic, computed by session_summarizer.py from
+    # ChatMessage rows and the session's behavioral ledgers. Distinct from
+    # TherapySession.behavioral_ledger_a/b, which is the live in-session
+    # per-partner trait tracker — this is the post-session summary snapshot.
+    behavioral_metrics = Column(JSON, nullable=True)
+
     # ── Session metrics snapshot ──────────────────────────────────────────────
     # These provide a quick quantitative read without joining ChatMessage.
     total_messages          = Column(Integer, nullable=True)

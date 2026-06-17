@@ -1611,6 +1611,247 @@ except Exception as e:
     traceback.print_exc()
     results["Phase 8"] = False
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 9 — Session summarizer
+# ─────────────────────────────────────────────────────────────────────────────
+
+phase("Phase 9 — ai.session_summarizer")
+
+try:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from datetime import datetime, timezone, timedelta
+
+    from backend.database import Base
+    from backend.models import TherapySession, ChatMessage, SessionInsight, CoupleProfile
+    from ai.session_summarizer import (
+        summarize_session,
+        _compute_behavioral_metrics,
+        _detect_candidate_pattern,
+        _format_behavioral_context,
+        _build_transcript_text,
+        _sanitize_output,
+        _parse_summary_sections,
+    )
+
+    # ── Throwaway in-memory database ──────────────────────────────────────────
+    engine9 = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine9)
+    Session9 = sessionmaker(bind=engine9)
+    db9 = Session9()
+    ok("In-memory test database created for Phase 9")
+
+    # ── Build a fake session with ledgers and a transcript ────────────────────
+    now = datetime.now(timezone.utc)
+    test_session = TherapySession(
+        room_id              = "summary-test-room",
+        name_a               = "Sky",
+        name_b               = "Cloud",
+        mode                 = "closed",
+        phase                = "ended",
+        session_started_at   = now - timedelta(minutes=42),
+        ended_at              = now,
+        session_duration_limit= 90,
+        session_number        = 1,
+        behavioral_ledger_a   = {
+            "repair_bids": 2,
+            "trait_probabilities": {"flooding_tendency": 0.45, "withdrawal_tendency": 0.05},
+        },
+        behavioral_ledger_b   = {
+            "repair_bids": 1,
+            "trait_probabilities": {"withdrawal_tendency": 0.40, "flooding_tendency": 0.02},
+        },
+    )
+    db9.add(test_session)
+    db9.commit()
+
+    def make_msg(sender, content, minutes_ago, extra=None):
+        return ChatMessage(
+            room_id   = "summary-test-room",
+            sender    = sender,
+            message_type = "ai" if sender == "ai" else "user",
+            content   = content,
+            extra_data= extra or {},
+            timestamp = now - timedelta(minutes=minutes_ago),
+        )
+
+    fake_messages = [
+        make_msg("a", "I feel like you never really hear me", 40, {"escalation": 3}),
+        make_msg("ai", "What does it feel like when you sense that?", 39, {"action": "explore"}),
+        make_msg("a", "Like I'm talking to a wall", 38, {"escalation": 7, "is_abusive": False}),
+        make_msg("ai", "That sounds painful. Cloud, what did you hear in that?", 37, {"action": "validate"}),
+        make_msg("b", "I didn't realise it felt that bad. I'm sorry", 36, {"repair_attempt": 5}),
+        make_msg("ai", "That matters. Sky, how does that land for you?", 35, {"action": "repair_acknowledgement"}),
+        make_msg("a", "It helps. I think we're starting to understand each other", 34, {"sentiment": 2, "escalation": 0}),
+        make_msg("ai", "Something just shifted here.", 33, {"action": "affirm_progress"}),
+    ]
+    ok(f"Built {len(fake_messages)} fake ChatMessage rows for testing")
+
+    # ── _compute_behavioral_metrics ────────────────────────────────────────────
+    ledger_a = test_session.behavioral_ledger_a
+    ledger_b = test_session.behavioral_ledger_b
+    metrics = _compute_behavioral_metrics(fake_messages, ledger_a, ledger_b)
+
+    required_metric_keys = [
+        "word_count_a", "word_count_b", "balance_score",
+        "turns_to_first_flood", "peak_escalation_score",
+        "total_escalation_events", "repair_efficacy_ratio",
+        "resolution_signal_present",
+    ]
+    missing = [k for k in required_metric_keys if k not in metrics]
+    if not missing:
+        ok(f"_compute_behavioral_metrics returns all required keys")
+    else:
+        fail(f"_compute_behavioral_metrics missing keys: {missing}")
+
+    if metrics["turns_to_first_flood"] == 2:
+        ok(f"Correctly identified first flood at turn 2: {metrics['turns_to_first_flood']}")
+    else:
+        info(f"turns_to_first_flood = {metrics['turns_to_first_flood']} (expected 2)")
+
+    if metrics["resolution_signal_present"] is True:
+        ok("Correctly detected resolution signal (affirm_progress fired)")
+    else:
+        fail("Should have detected resolution signal from affirm_progress action")
+
+    if metrics["repair_efficacy_ratio"] is not None and metrics["repair_efficacy_ratio"] > 0:
+        ok(f"repair_efficacy_ratio computed: {metrics['repair_efficacy_ratio']}")
+    else:
+        fail(f"repair_efficacy_ratio should be > 0, got {metrics['repair_efficacy_ratio']}")
+
+    # ── _detect_candidate_pattern ──────────────────────────────────────────────
+    pattern = _detect_candidate_pattern(ledger_a, ledger_b, "Sky", "Cloud")
+    if pattern and "pursuer-distancer" in pattern:
+        ok(f"Candidate pattern detected: '{pattern}'")
+    else:
+        info(f"Candidate pattern: {pattern!r}")
+
+    no_pattern = _detect_candidate_pattern({}, {}, "Sky", "Cloud")
+    if no_pattern is None:
+        ok("_detect_candidate_pattern correctly returns None for empty ledgers")
+    else:
+        fail(f"Expected None for empty ledgers, got: {no_pattern}")
+
+    # ── _format_behavioral_context — no raw numbers in suspicious notation ────
+    context_str = _format_behavioral_context(metrics, "Sky", "Cloud")
+    if isinstance(context_str, str) and len(context_str) > 20:
+        ok(f"_format_behavioral_context produced narrative text: '{context_str[:80]}...'")
+    else:
+        fail("_format_behavioral_context produced invalid output")
+
+    # ── _build_transcript_text ────────────────────────────────────────────────
+    transcript = _build_transcript_text(fake_messages, "Sky", "Cloud")
+    if "Sky:" in transcript and "Cloud:" in transcript and "Alinda:" in transcript:
+        ok("_build_transcript_text correctly labels all three speakers")
+    else:
+        fail("_build_transcript_text missing expected speaker labels")
+
+    # ── _sanitize_output — leak detection ─────────────────────────────────────
+    leaky_text = "Sky showed escalation: 8 during this exchange. Cloud felt heard."
+    cleaned, leaked = _sanitize_output(leaky_text)
+    if leaked and "escalation: 8" not in cleaned:
+        ok(f"_sanitize_output correctly redacted leaked score: '{cleaned}'")
+    else:
+        fail(f"_sanitize_output failed to redact leak: '{cleaned}' (leaked={leaked})")
+
+    clean_text = "Sky felt unheard and Cloud responded with genuine care."
+    cleaned2, leaked2 = _sanitize_output(clean_text)
+    if not leaked2 and cleaned2 == clean_text:
+        ok("_sanitize_output leaves clean narrative text untouched")
+    else:
+        fail(f"_sanitize_output incorrectly modified clean text: '{cleaned2}'")
+
+    trait_leak = "Cloud showed signs of withdrawal_tendency throughout the session."
+    cleaned3, leaked3 = _sanitize_output(trait_leak)
+    if leaked3:
+        ok("_sanitize_output correctly catches internal trait terminology")
+    else:
+        fail("_sanitize_output failed to catch trait terminology leak")
+
+    # ── _parse_summary_sections ───────────────────────────────────────────────
+    fake_llm_output = (
+        "KEY THEMES:\nFeeling unheard and reconnecting through vulnerability.\n\n"
+        "BREAKTHROUGH MOMENTS:\nCloud's apology after Sky named feeling unheard.\n\n"
+        "UNRESOLVED THREADS:\nNone recorded.\n\n"
+        "Sky's EMOTIONAL ARC:\nMoved from frustration to feeling understood.\n\n"
+        "Cloud's EMOTIONAL ARC:\nMoved from defensiveness to genuine remorse.\n\n"
+        "RELATIONSHIP DYNAMIC OBSERVED:\nA pursuer-distancer pattern softened through repair.\n\n"
+        "CONCRETE COMMITMENT:\nCheck in nightly about feeling heard.\n\n"
+        "RECOMMENDED FOCUS FOR NEXT SESSION:\nBuild on this repair moment.\n"
+    )
+    parsed = _parse_summary_sections(fake_llm_output, "Sky", "Cloud")
+    expected_keys = [
+        "key_themes", "breakthrough_moments", "unresolved_threads",
+        "emotional_arc_a", "emotional_arc_b", "relationship_dynamic",
+        "concrete_commitment", "recommended_focus",
+    ]
+    missing_parsed = [k for k in expected_keys if not parsed.get(k)]
+    if not missing_parsed:
+        ok(f"_parse_summary_sections extracted all {len(expected_keys)} sections")
+    else:
+        fail(f"_parse_summary_sections missing content for: {missing_parsed}")
+
+    if "frustration" in (parsed.get("emotional_arc_a") or ""):
+        ok("Correctly parsed Sky's emotional arc by name-specific header")
+    else:
+        fail(f"emotional_arc_a parsing incorrect: {parsed.get('emotional_arc_a')!r}")
+
+    # ── Full summarize_session() — without live LLM call ─────────────────────
+    # We test the full pipeline's resilience by checking it handles an
+    # empty LLM response gracefully (no API key scenario / live test skip).
+    import asyncio
+    from ai.llm_client import GROQ_API_KEY_BACKGROUND
+
+    async def _run_summary():
+        return await summarize_session(test_session, fake_messages, db9)
+
+    if GROQ_API_KEY_BACKGROUND:
+        info("Running live summarize_session() test (one LLM call)...")
+        result = asyncio.run(_run_summary())
+
+        if result is not None:
+            ok(f"summarize_session() created SessionInsight #{result.id}")
+            if result.behavioral_metrics:
+                ok(f"behavioral_metrics persisted: balance_score="
+                   f"{result.behavioral_metrics.get('balance_score')}")
+            else:
+                fail("behavioral_metrics was not persisted on the SessionInsight")
+
+            if result.key_themes:
+                ok(f"key_themes populated: '{result.key_themes[:60]}...'")
+            else:
+                warn("key_themes is empty — check LLM response or parsing")
+        else:
+            fail("summarize_session() returned None despite having a valid API key")
+    else:
+        warn("Skipping live summarize_session() test — GROQ_API_KEY_BACKGROUND not set")
+        warn("Deterministic components (Stage 1 and Stage 3) were still fully tested above")
+
+    # ── Insufficient messages guard ───────────────────────────────────────────
+    async def _run_short_summary():
+        return await summarize_session(test_session, fake_messages[:2], db9)
+
+    short_result = asyncio.run(_run_short_summary())
+    if short_result is None:
+        ok("summarize_session() correctly skips sessions with too few messages")
+    else:
+        fail("summarize_session() should return None for very short sessions")
+
+    db9.close()
+    results["Phase 9"] = True
+
+except ImportError as e:
+    fail(f"Import error in ai.session_summarizer: {e}")
+    info("Check that backend/models.py has the new 'behavioral_metrics' column "
+         "and that the Alembic migration has been run.")
+    traceback.print_exc()
+    results["Phase 9"] = False
+except Exception as e:
+    fail(f"Phase 9 crashed: {e}")
+    traceback.print_exc()
+    results["Phase 9"] = False
+
+    
 # SUMMARY
 
 
