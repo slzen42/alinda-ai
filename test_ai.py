@@ -1449,6 +1449,168 @@ except Exception as e:
     traceback.print_exc()
     results["Phase 7"] = False
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 8 — Backend dependencies
+# ─────────────────────────────────────────────────────────────────────────────
+
+phase("Phase 8 — backend.dependencies")
+
+try:
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from fastapi import HTTPException
+
+    from backend.database import Base
+    from backend.models import TherapySession
+    from backend.dependencies import (
+        get_session_or_404,
+        ensure_session_active,
+        verify_partner_access,
+        get_validated_session,
+    )
+
+    # ── Throwaway in-memory database — never touches Neon ────────────────────
+    test_engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=test_engine)
+    TestingSessionLocal = sessionmaker(bind=test_engine)
+    test_db = TestingSessionLocal()
+
+    ok("In-memory test database created from shared Base.metadata")
+
+    # ── Seed a test session ───────────────────────────────────────────────────
+    seeded = TherapySession(
+        room_id = "test-room-001",
+        name_a  = "Sky",
+        name_b  = None,        # Partner B has NOT joined yet — intentional
+        mode    = "guided",
+        phase   = "ready_for_session",
+    )
+    test_db.add(seeded)
+    test_db.commit()
+    ok("Seeded a test TherapySession (Partner B not yet joined)")
+
+    # ── get_session_or_404: found ─────────────────────────────────────────────
+    found = get_session_or_404("test-room-001", test_db)
+    if found.room_id == "test-room-001":
+        ok("get_session_or_404 found the seeded session")
+    else:
+        fail("get_session_or_404 returned wrong session")
+
+    # ── get_session_or_404: not found ─────────────────────────────────────────
+    try:
+        get_session_or_404("nonexistent-room", test_db)
+        fail("get_session_or_404 should have raised 404 for missing room")
+    except HTTPException as e:
+        if e.status_code == 404:
+            ok("get_session_or_404 correctly raises 404 for missing room")
+        else:
+            fail(f"Expected 404, got {e.status_code}")
+
+    # ── ensure_session_active: active session passes ─────────────────────────
+    try:
+        ensure_session_active(found)
+        ok("ensure_session_active passes for mode='guided'")
+    except HTTPException:
+        fail("ensure_session_active incorrectly blocked an active session")
+
+    # ── ensure_session_active: closed session blocked ────────────────────────
+    found.mode = "closed"
+    try:
+        ensure_session_active(found)
+        fail("ensure_session_active should have raised 403 for closed session")
+    except HTTPException as e:
+        if e.status_code == 403:
+            ok("ensure_session_active correctly blocks mode='closed'")
+        else:
+            fail(f"Expected 403, got {e.status_code}")
+
+    # ── ensure_session_active: ended phase blocked ────────────────────────────
+    found.mode  = "guided"      # reset mode
+    found.phase = "ended"
+    try:
+        ensure_session_active(found)
+        fail("ensure_session_active should have raised 403 for phase='ended'")
+    except HTTPException as e:
+        if e.status_code == 403:
+            ok("ensure_session_active correctly blocks phase='ended'")
+        else:
+            fail(f"Expected 403, got {e.status_code}")
+    found.phase = "ready_for_session"   # reset for later tests
+
+    # ── ensure_session_active: cooldown/paused are NOT blocked ───────────────
+    for permissive_mode in ["cooldown", "safety_lockdown", "crisis_pause", "paused"]:
+        found.mode = permissive_mode
+        try:
+            ensure_session_active(found)
+            ok(f"ensure_session_active correctly allows mode='{permissive_mode}'")
+        except HTTPException:
+            fail(f"ensure_session_active incorrectly blocked mode='{permissive_mode}'")
+    found.mode = "guided"   # reset
+
+    # ── verify_partner_access: joined partner passes ─────────────────────────
+    try:
+        verify_partner_access("a", found)
+        ok("verify_partner_access passes for role='a' (Sky has joined)")
+    except HTTPException:
+        fail("verify_partner_access incorrectly blocked a joined partner")
+
+    # ── verify_partner_access: unjoined partner blocked ───────────────────────
+    try:
+        verify_partner_access("b", found)
+        fail("verify_partner_access should have blocked role='b' (not joined)")
+    except HTTPException as e:
+        if e.status_code == 403:
+            ok("verify_partner_access correctly blocks unjoined role='b'")
+        else:
+            fail(f"Expected 403, got {e.status_code}")
+
+    # ── verify_partner_access: passes after partner joins ─────────────────────
+    found.name_b = "Cloud"
+    try:
+        verify_partner_access("b", found)
+        ok("verify_partner_access passes for role='b' after Cloud joins")
+    except HTTPException:
+        fail("verify_partner_access incorrectly blocked role='b' after joining")
+
+    # ── get_validated_session: full pipeline success ──────────────────────────
+    result = get_validated_session("test-room-001", "a", test_db)
+    if result.room_id == "test-room-001":
+        ok("get_validated_session full pipeline succeeds for valid request")
+    else:
+        fail("get_validated_session returned unexpected session")
+
+    # ── get_validated_session: require_active=False bypasses closed check ─────
+    found.mode = "closed"
+    test_db.commit()
+    try:
+        result = get_validated_session("test-room-001", "a", test_db, require_active=False)
+        ok("get_validated_session with require_active=False allows closed session "
+           "(correct for feedback/insight routes)")
+    except HTTPException:
+        fail("get_validated_session with require_active=False should not block closed session")
+
+    try:
+        get_validated_session("test-room-001", "a", test_db, require_active=True)
+        fail("get_validated_session with require_active=True should block closed session")
+    except HTTPException as e:
+        if e.status_code == 403:
+            ok("get_validated_session with require_active=True correctly blocks closed session")
+        else:
+            fail(f"Expected 403, got {e.status_code}")
+
+    test_db.close()
+    results["Phase 8"] = True
+
+except ImportError as e:
+    fail(f"Import error in backend.dependencies: {e}")
+    info("Check that backend/ is a proper package (has __init__.py) and importable from project root.")
+    traceback.print_exc()
+    results["Phase 8"] = False
+except Exception as e:
+    fail(f"Phase 8 crashed: {e}")
+    traceback.print_exc()
+    results["Phase 8"] = False
+
 # SUMMARY
 
 
