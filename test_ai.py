@@ -577,18 +577,26 @@ try:
     else:
         fail("build_intake_analysis_prompt() user prompt missing partner name")
 
-    required_sections = [
-        "PRIMARY CONCERN",
-        "COMMUNICATION STYLE",
-        "CORE NEED",
-        "LIKELY TRIGGERS",
-        "WATCH FOR",
+
+    required_json_fields = [
+        "core_attachment_wound",
+        "conflict_posture",
+        "validation_language",
+        "primary_trigger",
+        "blind_spot",
+        "handling_instructions",
+        "confidence",
     ]
-    for section in required_sections:
-        if section in intake_user:
-            ok(f"Intake prompt contains section: {section}")
+    for json_field in required_json_fields:
+        if json_field in intake_user:
+            ok(f"Intake prompt requests JSON field: {json_field}")
         else:
-            fail(f"Intake prompt missing section: {section}")
+            fail(f"Intake prompt missing JSON field instruction: {json_field}")
+
+    if "ONLY a JSON object" in intake_system or "ONLY a valid JSON" in intake_system:
+        ok("Intake system prompt enforces strict JSON-only output")
+    else:
+        fail("Intake system prompt should explicitly require JSON-only output")
 
     # ── build_session_summary_prompt() ───────────────────────────────────────
     summary_system, summary_user = build_session_summary_prompt(
@@ -1850,6 +1858,249 @@ except Exception as e:
     fail(f"Phase 9 crashed: {e}")
     traceback.print_exc()
     results["Phase 9"] = False
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 10 — Intake analyzer
+# ─────────────────────────────────────────────────────────────────────────────
+
+phase("Phase 10 — ai.intake_analyzer")
+
+try:
+    import asyncio
+    from ai.intake_analyzer import (
+        generate_partner_profile,
+        analyze_both_partners,
+        PartnerProfile,
+        ConflictPosture,
+        ValidationLanguage,
+        ProfileConfidence,
+        IntakeAnalysisResult,
+        _extract_json_object,
+        _is_probable_leak,
+        _redact_leaked_fields,
+        _format_instructional_text,
+        _default_profile,
+        _validate_or_none,
+    )
+    from ai.llm_client import GROQ_API_KEY_BACKGROUND
+
+    # ── PartnerProfile validation ─────────────────────────────────────────────
+    valid_data = {
+        "core_attachment_wound": "fear of abandonment",
+        "conflict_posture":      "Withdrawing",   # capitalised — tests normalisation
+        "validation_language":   "COGNITIVE",     # uppercase — tests normalisation
+        "primary_trigger":        "feeling criticized in front of others",
+        "blind_spot":              "may not see how silence is experienced by their partner",
+        "handling_instructions":   ["Validate logic first.", "Then gently pivot to feeling."],
+        "confidence":              "medium",
+    }
+    profile = PartnerProfile(**valid_data)
+    if profile.conflict_posture == ConflictPosture.WITHDRAWING:
+        ok("PartnerProfile normalises capitalised enum strings correctly")
+    else:
+        fail(f"Enum normalisation failed: got {profile.conflict_posture}")
+
+    if profile.validation_language == ValidationLanguage.COGNITIVE:
+        ok("PartnerProfile normalises uppercase enum strings correctly")
+    else:
+        fail(f"Enum normalisation failed: got {profile.validation_language}")
+
+    # ── Rejects invalid enum values ───────────────────────────────────────────
+    bad_data = dict(valid_data)
+    bad_data["conflict_posture"] = "not_a_real_posture"
+    try:
+        PartnerProfile(**bad_data)
+        fail("PartnerProfile should reject invalid enum value")
+    except Exception:
+        ok("PartnerProfile correctly rejects invalid enum value")
+
+    # ── handling_instructions capped at 5 ─────────────────────────────────────
+    many_instructions = dict(valid_data)
+    many_instructions["handling_instructions"] = [f"instruction {i}" for i in range(10)]
+    capped = PartnerProfile(**many_instructions)
+    if len(capped.handling_instructions) == 5:
+        ok("handling_instructions correctly capped at 5 items")
+    else:
+        fail(f"Expected 5 instructions, got {len(capped.handling_instructions)}")
+
+    # ── _extract_json_object ──────────────────────────────────────────────────
+    clean_json = '{"a": 1, "b": "two"}'
+    if _extract_json_object(clean_json) == {"a": 1, "b": "two"}:
+        ok("_extract_json_object parses clean JSON")
+    else:
+        fail("_extract_json_object failed on clean JSON")
+
+    fenced_json = '```json\n{"a": 1}\n```'
+    if _extract_json_object(fenced_json) == {"a": 1}:
+        ok("_extract_json_object strips markdown code fences")
+    else:
+        fail("_extract_json_object failed to strip code fences")
+
+    preamble_json = 'Here is the profile:\n{"a": 1}\nLet me know if helpful!'
+    result = _extract_json_object(preamble_json)
+    if result and result.get("a") == 1:
+        ok("_extract_json_object recovers JSON despite preamble/postamble text")
+    else:
+        fail(f"_extract_json_object failed with surrounding text: {result}")
+
+    if _extract_json_object("not json at all") is None:
+        ok("_extract_json_object correctly returns None for non-JSON text")
+    else:
+        fail("_extract_json_object should return None for garbage input")
+
+    # ── _validate_or_none ─────────────────────────────────────────────────────
+    if _validate_or_none(valid_data) is not None:
+        ok("_validate_or_none returns a profile for valid data")
+    else:
+        fail("_validate_or_none should succeed on valid data")
+
+    if _validate_or_none({"garbage": "data"}) is None:
+        ok("_validate_or_none returns None for invalid data")
+    else:
+        fail("_validate_or_none should return None for invalid data")
+
+    # ── _default_profile ───────────────────────────────────────────────────────
+    default = _default_profile()
+    if default.confidence == ProfileConfidence.LOW:
+        ok("_default_profile has confidence=LOW")
+    else:
+        fail("_default_profile should have confidence=LOW")
+
+    # ── Privacy leak detection ────────────────────────────────────────────────
+    fake_intake = (
+        "I am terrified my partner is going to leave me for their coworker. "
+        "Whenever they come home late I assume the worst. "
+        "I wish they understood how much their silence hurts me."
+    )
+
+    leaky_value = "terrified my partner is going to leave me for their coworker"
+    if _is_probable_leak(leaky_value, fake_intake.lower(), [fake_intake]):
+        ok("_is_probable_leak correctly catches near-verbatim copied phrase")
+    else:
+        fail("_is_probable_leak failed to catch an obvious verbatim leak")
+
+    safe_value = "fear of abandonment related to perceived romantic rivals"
+    if not _is_probable_leak(safe_value, fake_intake.lower(), [fake_intake]):
+        ok("_is_probable_leak correctly allows a genuinely abstracted phrase")
+    else:
+        fail("_is_probable_leak false-positived on a properly abstracted phrase")
+
+    short_value = "withdrawing"
+    if not _is_probable_leak(short_value, fake_intake.lower(), [fake_intake]):
+        ok("_is_probable_leak correctly skips short values (avoids false positives)")
+    else:
+        fail("_is_probable_leak should skip values below the word-count threshold")
+
+    # ── _redact_leaked_fields — full pipeline ─────────────────────────────────
+    leaky_profile_data = dict(valid_data)
+    leaky_profile_data["blind_spot"] = "terrified my partner is going to leave me for their coworker"
+    leaky_profile = PartnerProfile(**leaky_profile_data)
+
+    cleaned_profile, redactions = _redact_leaked_fields(leaky_profile, fake_intake)
+    if "blind_spot" in redactions and cleaned_profile.blind_spot == "not specified":
+        ok(f"_redact_leaked_fields correctly redacted leaked blind_spot: {redactions}")
+    else:
+        fail(f"_redact_leaked_fields failed to redact leak. Redactions: {redactions}, "
+             f"blind_spot: {cleaned_profile.blind_spot!r}")
+
+    # ── _format_instructional_text ────────────────────────────────────────────
+    text = _format_instructional_text("Sky", profile)
+    if "Sky" in text and len(text) > 30:
+        ok("_format_instructional_text produces non-empty text containing the partner's name")
+    else:
+        fail("_format_instructional_text output invalid")
+
+    if profile.core_attachment_wound not in text or "fear of abandonment" in text:
+        # The phrase should appear in ABSTRACTED form (this is fine, it's already abstract)
+        pass
+
+    default_text = _format_instructional_text("Sky", default)
+    if "Sky" in default_text and "not yet determined" not in default_text:
+        ok("_format_instructional_text correctly omits 'not yet determined' fields from fallback text")
+    else:
+        fail(f"Default profile text should not leak placeholder values: {default_text[:100]}")
+
+    # ── End-to-end fallback path (no API key needed) ──────────────────────────
+    async def _test_too_short():
+        return await generate_partner_profile("Sky", "too short")
+
+    short_result = asyncio.run(_test_too_short())
+    if isinstance(short_result, IntakeAnalysisResult) and short_result.used_fallback:
+        ok("generate_partner_profile correctly uses fallback for too-short intake")
+    else:
+        fail("generate_partner_profile should fall back for very short intake text")
+
+    # ── Live LLM test (only if key is set) ────────────────────────────────────
+    if GROQ_API_KEY_BACKGROUND:
+        info("Running live generate_partner_profile() test...")
+
+        fake_full_intake = (
+            "WHAT HAS BEEN DIFFICULT:\nI feel like every time we disagree, I start "
+            "explaining myself over and over and it never seems to land. I think I "
+            "get stuck in my head trying to make my point logically instead of just "
+            "saying how I feel.\n\nCORE NEED:\nI need to know that being right isn't "
+            "the only way to be heard in this relationship."
+        )
+
+        async def _live_test():
+            return await generate_partner_profile("Sky", fake_full_intake)
+
+        live_result = asyncio.run(_live_test())
+
+        if isinstance(live_result, IntakeAnalysisResult):
+            ok(f"Live generate_partner_profile() returned a result "
+               f"(used_fallback={live_result.used_fallback})")
+
+            if "Sky" in live_result.instructional_text:
+                ok("Live instructional_text contains the partner's name")
+            else:
+                fail("Live instructional_text missing partner's name")
+
+            # ── THE critical privacy test ──────────────────────────────────────
+            test_sentence = (
+                "I think I get stuck in my head trying to make my point logically "
+                "instead of just saying how I feel"
+            )
+            if test_sentence.lower() not in live_result.instructional_text.lower():
+                ok("PRIVACY VERIFIED: instructional_text does not contain the "
+                   "user's actual intake sentence verbatim")
+            else:
+                fail("PRIVACY VIOLATION: instructional_text leaked a verbatim "
+                     "sentence from the raw intake")
+
+            if live_result.privacy_redactions:
+                info(f"Redactions applied this run: {live_result.privacy_redactions}")
+        else:
+            fail("Live generate_partner_profile() returned unexpected type")
+
+        # ── Concurrent both-partners test ─────────────────────────────────────
+        async def _both_test():
+            return await analyze_both_partners(
+                "Sky", fake_full_intake,
+                "Cloud", "I tend to go quiet when things get heated. I just need a moment.",
+            )
+
+        result_a, result_b = asyncio.run(_both_test())
+        if isinstance(result_a, IntakeAnalysisResult) and isinstance(result_b, IntakeAnalysisResult):
+            ok("analyze_both_partners() returned valid results for both partners concurrently")
+        else:
+            fail("analyze_both_partners() returned unexpected types")
+
+    else:
+        warn("Skipping live intake_analyzer tests — GROQ_API_KEY_BACKGROUND not set")
+        warn("All deterministic components (parsing, validation, privacy redaction, "
+             "formatting, fallback path) were still fully tested above")
+
+    results["Phase 10"] = True
+
+except ImportError as e:
+    fail(f"Import error in ai.intake_analyzer: {e}")
+    traceback.print_exc()
+    results["Phase 10"] = False
+except Exception as e:
+    fail(f"Phase 10 crashed: {e}")
+    traceback.print_exc()
+    results["Phase 10"] = False
 
     
 # SUMMARY

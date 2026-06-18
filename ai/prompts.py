@@ -509,23 +509,29 @@ Respond as Alinda. Warm, direct, human. 1-2 sentences only.\
 # ─────────────────────────────────────────────────────────────────────────────
 # INTAKE ANALYSIS PROMPT
 #
-# Used by intake_analyzer.py to extract a pre-session partner profile
-# from a partner's four intake answers.
+# Used by ai/intake_analyzer.py to extract a structured, validated psychological
+# profile from a partner's intake answers, output as strict JSON.
 #
 # This prompt runs once per partner when both intakes are submitted.
-# The output is stored as session.profile_a / session.profile_b and
-# injected into every subsequent session prompt via build_prompt().
+# intake_analyzer.py parses the JSON, validates it against the PartnerProfile
+# schema, and converts it into private instructional text — never raw JSON,
+# never a biography — stored as session.partner_profile_a / partner_profile_b
+# and injected into every subsequent session prompt via build_prompt().
 # ─────────────────────────────────────────────────────────────────────────────
 
 _INTAKE_SYSTEM_PROMPT = """\
-You are a clinical psychologist reading a patient's pre-session intake form \
-before a couples therapy session. Your job is to extract a brief, structured \
-clinical profile that will help the therapist understand this person before \
-the session begins.
+You are a clinical psychologist analyzing one partner's pre-session intake \
+responses before a couples therapy session begins.
 
-Be precise. Be clinical but human. Do not moralise. Do not judge.
-Extract only what the intake answers actually tell you — do not invent.
-Write in third person, as notes a therapist would read.
+Your output will become private behavioral guidance for the therapist. It will \
+NEVER be shown to this person or their partner. For that reason, you must NEVER \
+quote, closely paraphrase, or reference specific events, names, or details from \
+their answers. Translate everything into behavioral and psychological patterns, \
+not historical facts.
+
+Be precise, clinically grounded, and compassionate — never judgmental, even when \
+describing a defensive pattern. Respond with ONLY a valid JSON object. No markdown \
+code fences. No preamble or closing remarks. No text before or after the JSON.
 """
 
 _INTAKE_USER_TEMPLATE = """\
@@ -534,38 +540,31 @@ Partner name: {name}
 Intake answers:
 {intake_text}
 
-Extract a clinical profile in exactly this format:
+Respond with ONLY a JSON object in exactly this structure:
 
-PRIMARY CONCERN:
-(One sentence — the core issue this person is bringing to the session.)
-
-COMMUNICATION STYLE:
-(One sentence — how this person tends to express themselves: \
-do they intellectualise, escalate, withdraw, deflect, over-explain?)
-
-CORE NEED:
-(One sentence — what this person most needs from the session and from their partner.)
-
-LIKELY TRIGGERS:
-(One sentence — what will probably cause this person to shut down or escalate.)
-
-WATCH FOR:
-(One sentence — one thing the therapist should be particularly attentive to \
-with this person.)
+{{
+  "core_attachment_wound": "<one short phrase: their primary relational fear, e.g. 'fear of abandonment' or 'fear of being controlled' — never quote their words>",
+  "conflict_posture": "<exactly one of: intellectualizing | withdrawing | counter_attacking | emotional_flooding | people_pleasing | mixed>",
+  "validation_language": "<exactly one of: cognitive | somatic | mixed>",
+  "primary_trigger": "<one short phrase describing what tends to trigger their defensiveness, written as a behavioral pattern, never a quote>",
+  "blind_spot": "<one gentle, tentative phrase about a perspective they may not have fully considered about their own contribution to the dynamic — phrase with compassion, never as a verdict>",
+  "handling_instructions": ["<2 to 4 short, direct, actionable instructions for how a therapist should approach this specific person>"],
+  "confidence": "<exactly one of: high | medium | low — how strongly the intake content actually supports this profile>"
+}}
 """
 
 
 def build_intake_analysis_prompt(name: str, intake_text: str) -> tuple[str, str]:
     """
-    Builds the system and user prompts for intake analysis.
+    Builds the system and user prompts for structured intake analysis.
 
     Args:
         name:         Partner's name.
-        intake_text:  The combined intake answers submitted during the session setup.
+        intake_text:  The combined intake answers submitted during session setup.
 
     Returns:
         A tuple of (system_prompt, user_prompt) ready to be sent as
-        separate roles in the Groq API call.
+        separate roles in the Groq API call using the background model.
     """
     user_prompt = _INTAKE_USER_TEMPLATE.format(
         name=name,
