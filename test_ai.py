@@ -2102,6 +2102,301 @@ except Exception as e:
     traceback.print_exc()
     results["Phase 10"] = False
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 11 — Session manager
+# ─────────────────────────────────────────────────────────────────────────────
+
+phase("Phase 11 — backend.session_manager")
+
+try:
+    import asyncio
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from fastapi import HTTPException, BackgroundTasks
+
+    from backend.database import Base
+    from backend.models import TherapySession, ChatMessage, SessionFeedback
+    import backend.session_manager as sm
+    from ai.llm_client import GROQ_API_KEY_SESSION
+
+    engine11 = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine11)
+    Session11 = sessionmaker(bind=engine11)
+    db11 = Session11()
+    ok("In-memory test database created for Phase 11")
+
+    # ── _resolve_session_style ────────────────────────────────────────────────
+    if sm._resolve_session_style("direct", "direct") == "direct":
+        ok("_resolve_session_style: identical styles return that style")
+    else:
+        fail("_resolve_session_style failed on identical styles")
+
+    if sm._resolve_session_style("gentle", "direct") == "gentle":
+        ok("_resolve_session_style: gentle is always honored over direct")
+    else:
+        fail("_resolve_session_style should prioritize gentle")
+
+    if sm._resolve_session_style("direct", "practical") == "practical":
+        ok("_resolve_session_style: direct+practical merges to practical")
+    else:
+        fail("_resolve_session_style failed on direct+practical merge")
+
+    if sm._resolve_session_style(None, None) == "balanced":
+        ok("_resolve_session_style: defaults to balanced when both unset")
+    else:
+        fail("_resolve_session_style should default to balanced")
+
+    # ── _apply_preflight_flags ────────────────────────────────────────────────
+    decision = {"system_message": "Existing clinical note."}
+    sm._apply_preflight_flags(decision, {"user_is_looping": True}, "Sky")
+    if "fundamentally unheard" in decision["system_message"] and "Existing clinical note" in decision["system_message"]:
+        ok("_apply_preflight_flags correctly prepends looping guidance, preserves existing note")
+    else:
+        fail(f"_apply_preflight_flags output incorrect: {decision['system_message']!r}")
+
+    decision2 = {"system_message": ""}
+    sm._apply_preflight_flags(decision2, {}, "Sky")
+    if decision2["system_message"] == "":
+        ok("_apply_preflight_flags leaves system_message untouched when no flags fire")
+    else:
+        fail("_apply_preflight_flags should not alter message with no flags")
+
+    # ── _resolve_current_turn ─────────────────────────────────────────────────
+    d1 = {"next_speaker": "both"}
+    if sm._resolve_current_turn(d1, {"llm_suggested_target": "a"}) is None:
+        ok("_resolve_current_turn: 'both' floor control returns None (open floor)")
+    else:
+        fail("_resolve_current_turn should return None for floor_control='both'")
+
+    d2 = {"next_speaker": "a"}
+    if sm._resolve_current_turn(d2, {"llm_suggested_target": "b"}) == "b":
+        ok("_resolve_current_turn: LLM's actual addressed partner overrides mediator's prediction")
+    else:
+        fail("_resolve_current_turn should trust the LLM's actual words over the prediction")
+
+    d3 = {"next_speaker": "a"}
+    if sm._resolve_current_turn(d3, {"llm_suggested_target": "both"}) == "a":
+        ok("_resolve_current_turn: falls back to floor_control when LLM target is non-specific")
+    else:
+        fail("_resolve_current_turn fallback failed")
+
+    # ── _mark_session_closed ──────────────────────────────────────────────────
+    test_sess = TherapySession(room_id="close-test", name_a="Sky", name_b="Cloud", mode="guided", phase="ready_for_session")
+    sm._mark_session_closed(test_sess, closed_by="a")
+    if test_sess.mode == "closed" and test_sess.phase == "ended" and test_sess.end_requested_by == "a":
+        ok("_mark_session_closed sets mode, phase, and end_requested_by correctly")
+    else:
+        fail("_mark_session_closed did not set expected fields")
+
+    # ── create_room / join_room ───────────────────────────────────────────────
+    created = sm.create_room("room-11", "Sky", db11)
+    if created.room_id == "room-11" and created.name_a == "Sky" and created.mode == "intake":
+        ok("create_room produces a correctly initialised session")
+    else:
+        fail("create_room output incorrect")
+
+    try:
+        sm.create_room("room-11", "Someone Else", db11)
+        fail("create_room should reject a duplicate room_id")
+    except HTTPException as e:
+        if e.status_code == 400:
+            ok("create_room correctly rejects duplicate room_id")
+        else:
+            fail(f"Expected 400, got {e.status_code}")
+
+    joined = sm.join_room("room-11", "Cloud", db11)
+    if joined.name_b == "Cloud" and joined.phase == "waiting_for_intake":
+        ok("join_room correctly registers Partner B and advances phase")
+    else:
+        fail("join_room did not update session correctly")
+
+    try:
+        sm.join_room("room-11", "ThirdWheel", db11)
+        fail("join_room should reject a third partner")
+    except HTTPException as e:
+        if e.status_code == 400:
+            ok("join_room correctly rejects a third partner joining")
+        else:
+            fail(f"Expected 400, got {e.status_code}")
+
+    # ── set_typing_status ─────────────────────────────────────────────────────
+    typed = sm.set_typing_status("room-11", "a", True, db11)
+    if typed.partner_typing and typed.typing_role == "a":
+        ok("set_typing_status correctly records typing state")
+    else:
+        fail("set_typing_status did not update correctly")
+
+    # ── toggle_pause / resume_session ─────────────────────────────────────────
+    paused = sm.toggle_pause("room-11", "a", 15, db11)
+    if paused.mode == "paused" and paused.paused_until is not None:
+        ok("toggle_pause correctly sets paused mode and expiry")
+    else:
+        fail("toggle_pause did not update correctly")
+
+    resumed = sm.resume_session("room-11", "b", db11)
+    if resumed.mode == "guided" and resumed.paused_until is None:
+        ok("resume_session correctly clears the pause")
+    else:
+        fail("resume_session did not clear pause correctly")
+
+    # ── refresh_session_state — lazy pause auto-expiry ────────────────────────
+    expired_sess = TherapySession(
+        room_id="expire-test", name_a="Sky", name_b="Cloud",
+        mode="paused", paused_until=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    db11.add(expired_sess)
+    db11.commit()
+
+    async def _test_expiry():
+        return await sm.refresh_session_state("expire-test", db11)
+
+    refreshed = asyncio.run(_test_expiry())
+    if refreshed.mode == "guided" and refreshed.paused_until is None:
+        ok("refresh_session_state correctly auto-expires a stale pause")
+    else:
+        fail(f"refresh_session_state failed to auto-expire pause: mode={refreshed.mode}")
+
+    # ── submit_feedback ────────────────────────────────────────────────────────
+    closed_sess = TherapySession(room_id="feedback-test", name_a="Sky", name_b="Cloud", mode="closed", phase="ended")
+    db11.add(closed_sess)
+    db11.commit()
+
+    fb = sm.submit_feedback("feedback-test", "a", 5, 4, 5, "This really helped.", db11)
+    if isinstance(fb, SessionFeedback) and fb.felt_heard == 5:
+        ok("submit_feedback correctly records feedback even on a closed session")
+    else:
+        fail("submit_feedback did not record correctly")
+
+    db11.refresh(closed_sess)
+    if closed_sess.feedback_submitted_a:
+        ok("submit_feedback correctly flags feedback_submitted_a on the session")
+    else:
+        fail("feedback_submitted_a was not set")
+
+    # ── request_end_session — mutual confirmation ─────────────────────────────
+    end_sess = TherapySession(room_id="end-test", name_a="Sky", name_b="Cloud", mode="guided", phase="ready_for_session")
+    db11.add(end_sess)
+    db11.commit()
+
+    bg = BackgroundTasks()
+
+    first_request = sm.request_end_session("end-test", "a", db11, bg)
+    if first_request.end_requested_by == "a" and first_request.mode != "closed":
+        ok("request_end_session: first request marks end_requested_by, does not close yet")
+    else:
+        fail("request_end_session first-request behavior incorrect")
+
+    same_partner_again = sm.request_end_session("end-test", "a", db11, bg)
+    if same_partner_again.mode != "closed":
+        ok("request_end_session: same partner repeating request is idempotent")
+    else:
+        fail("request_end_session should not close on repeated request from same partner")
+
+    confirmed = sm.request_end_session("end-test", "b", db11, bg)
+    if confirmed.mode == "closed" and confirmed.phase == "ended":
+        ok("request_end_session: other partner's confirmation correctly closes the session")
+    else:
+        fail("request_end_session did not close on mutual confirmation")
+
+    # ── process_user_message — guard against intake-mode messages ────────────
+    intake_sess = TherapySession(room_id="intake-guard-test", name_a="Sky", name_b="Cloud", mode="intake", phase="waiting_for_intake")
+    db11.add(intake_sess)
+    db11.commit()
+
+    async def _test_intake_guard():
+        return await sm.process_user_message("intake-guard-test", "a", "Hello?", db11, BackgroundTasks())
+
+    try:
+        asyncio.run(_test_intake_guard())
+        fail("process_user_message should reject messages while mode='intake'")
+    except HTTPException as e:
+        if e.status_code == 400:
+            ok("process_user_message correctly rejects messages sent during intake")
+        else:
+            fail(f"Expected 400, got {e.status_code}")
+
+    # ── process_user_message — silent drop on empty message ──────────────────
+    live_sess = TherapySession(
+        room_id="live-test", name_a="Sky", name_b="Cloud",
+        mode="guided", phase="ready_for_session",
+        session_started_at=datetime.now(timezone.utc),
+    )
+    db11.add(live_sess)
+    db11.commit()
+
+    async def _test_empty():
+        return await sm.process_user_message("live-test", "a", "", db11, BackgroundTasks())
+
+    empty_result = asyncio.run(_test_empty())
+    if empty_result["no_op"] and empty_result["new_messages"] == []:
+        ok("process_user_message correctly no-ops on empty message")
+    else:
+        fail(f"process_user_message should no-op on empty message: {empty_result}")
+
+    # ── process_user_message — length guardrail produces both messages ───────
+    async def _test_too_long():
+        return await sm.process_user_message("live-test", "a", "A" * 3000, db11, BackgroundTasks())
+
+    long_result = asyncio.run(_test_too_long())
+    if len(long_result["new_messages"]) == 2:
+        ok("process_user_message correctly persists both user and AI messages for length guardrail")
+        if long_result["new_messages"][0].extra_data.get("guardrail_blocked"):
+            ok("User's over-length message correctly flagged with guardrail_blocked")
+        else:
+            fail("Over-length user message missing guardrail_blocked flag")
+    else:
+        fail(f"Expected 2 messages for length guardrail, got {len(long_result['new_messages'])}")
+
+    # ── Full live pipeline (only with API key) ────────────────────────────────
+    if GROQ_API_KEY_SESSION:
+        info("Running live process_user_message() full pipeline test...")
+
+        async def _test_full_pipeline():
+            return await sm.process_user_message(
+                "live-test", "a",
+                "I feel like Cloud never really listens when I try to explain something important.",
+                db11, BackgroundTasks(),
+            )
+
+        result = asyncio.run(_test_full_pipeline())
+
+        if not result["no_op"] and len(result["new_messages"]) == 2:
+            ok("Full live pipeline produced both user and AI messages")
+            user_m, ai_m = result["new_messages"]
+            if ai_m.content and len(ai_m.content) > 0:
+                ok(f"AI response generated: '{ai_m.content[:70]}...'")
+            else:
+                fail("AI message content is empty")
+
+            db11.refresh(result["session"])
+            if result["session"].message_count >= 1:
+                ok(f"Session message_count correctly incremented: {result['session'].message_count}")
+            else:
+                fail("message_count was not incremented")
+
+            if result["session"].current_turn in ("a", "b", None):
+                ok(f"current_turn resolved to a valid value: {result['session'].current_turn}")
+            else:
+                fail(f"current_turn has invalid value: {result['session'].current_turn}")
+        else:
+            fail(f"Full pipeline did not produce expected output: {result}")
+    else:
+        warn("Skipping live process_user_message() test — GROQ_API_KEY_SESSION not set")
+        warn("All deterministic helpers and guard paths were still fully tested above")
+
+    db11.close()
+    results["Phase 11"] = True
+
+except ImportError as e:
+    fail(f"Import error in backend.session_manager: {e}")
+    traceback.print_exc()
+    results["Phase 11"] = False
+except Exception as e:
+    fail(f"Phase 11 crashed: {e}")
+    traceback.print_exc()
+    results["Phase 11"] = False
+
     
 # SUMMARY
 
@@ -2109,6 +2404,7 @@ except Exception as e:
 print(f"\n{C.BOLD}{'═' * 50}{C.RESET}")
 print(f"{C.BOLD}  TEST SUMMARY{C.RESET}")
 print(f"{C.BOLD}{'═' * 50}{C.RESET}")
+
 
 all_passed = True
 for phase_name, passed in results.items():
