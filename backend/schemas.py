@@ -598,9 +598,26 @@ class HealthResponse(BaseModel):
 
 
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GENERIC RESPONSES
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+class SendMessageResponse(BaseModel):
+    """
+    The combined response from POST /message.
+
+    Contains the updated session state (so the frontend can re-render the
+    turn indicator, mode, and stage pill in one round trip) plus all new
+    messages produced this turn (typically one user message and one AI
+    message, though some guard paths produce zero or one).
+    """
+    session:      SessionStateResponse
+    new_messages: list[MessageResponse]
+    no_op:        bool = False
+
+    model_config = {"from_attributes": True}
 
 class AckResponse(BaseModel):
     """
