@@ -576,6 +576,21 @@ class SessionInsightResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+class SessionInsightPollResponse(BaseModel):
+    """
+    The response envelope for GET /feedback/{room_id}/insight.
+
+    Wraps SessionInsightResponse rather than returning it bare, so the
+    frontend has an explicit, typed signal to distinguish "still
+    processing" from "broken" — a bare null body is ambiguous about
+    which of those two states it represents.
+
+    ready=False, insight=None  → still processing; keep polling
+    ready=True,  insight=<obj> → summarization complete; render the dashboard
+    """
+    ready:   bool
+    insight: Optional[SessionInsightResponse] = None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HEALTH CHECK

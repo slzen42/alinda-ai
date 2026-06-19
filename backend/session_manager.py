@@ -760,17 +760,22 @@ def submit_feedback(
     return feedback
 
 
-def get_latest_insight(room_id: str, db: DBSession) -> Optional[SessionInsight]:
+def get_latest_insight(room_id: str, role: str, db: DBSession) -> Optional[SessionInsight]:
     """
     Returns the most recent SessionInsight for a room, or None if
     summarization hasn't completed yet (it runs in the background after
     closure — the frontend should poll this gently rather than expect it
     immediately).
+
+    require_active=False because this is explicitly meant to run after a
+    session has closed. verify_partner_access still applies — a partner
+    cannot fetch insight for a room they never joined, even though the
+    room itself has concluded.
     """
-    get_session_or_404(room_id, db)   # Confirms the room itself exists
+    session = get_validated_session(room_id, role, db, require_active=False)
     return (
         db.query(SessionInsight)
-        .filter(SessionInsight.room_id == room_id)
+        .filter(SessionInsight.room_id == session.room_id)
         .order_by(SessionInsight.created_at.desc())
         .first()
     )
