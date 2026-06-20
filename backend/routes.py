@@ -292,6 +292,7 @@ async def send_message(
     response_model = ConversationResponse,
     summary        = "Fetch the full transcript for a session",
 )
+
 def get_conversation(
     room_id: str,
     db:      DBSession = Depends(get_db),
@@ -364,7 +365,7 @@ def update_typing_status(
     response_model = SessionStateResponse,
     summary        = "Signal that a partner is ready to resume after crisis pause",
 )
-def crisis_ready(
+async def crisis_ready(
     payload: CrisisReadyRequest,
     db:      DBSession = Depends(get_db),
 ) -> SessionStateResponse:
@@ -381,7 +382,7 @@ def crisis_ready(
     Raises 404 if the room doesn't exist.
     Raises 403 if the partner hasn't joined.
     """
-    session = session_manager.submit_crisis_ready(payload.room_id, payload.role, db)
+    session = await session_manager.submit_crisis_ready(payload.room_id, payload.role, db)
     return SessionStateResponse.model_validate(session)
 
 
@@ -394,7 +395,7 @@ def crisis_ready(
     response_model = SessionStateResponse,
     summary        = "Pause the session (either partner)",
 )
-def pause_session(
+async def pause_session(
     payload: PauseSessionRequest,
     db:      DBSession = Depends(get_db),
 ) -> SessionStateResponse:
@@ -411,7 +412,7 @@ def pause_session(
     Raises 404 if the room doesn't exist.
     Raises 403 if the session has concluded or the partner hasn't joined.
     """
-    session = session_manager.toggle_pause(
+    session = await session_manager.toggle_pause(
         payload.room_id,
         payload.role,
         payload.duration_minutes,
@@ -420,12 +421,14 @@ def pause_session(
     return SessionStateResponse.model_validate(session)
 
 
+
+
 @router.post(
     "/resume",
     response_model = SessionStateResponse,
     summary        = "Resume a paused session (either partner)",
 )
-def resume_session(
+async def resume_session(
     payload: ResumeSessionRequest,
     db:      DBSession = Depends(get_db),
 ) -> SessionStateResponse:
@@ -438,7 +441,7 @@ def resume_session(
     Raises 404 if the room doesn't exist.
     Raises 403 if the session has concluded or the partner hasn't joined.
     """
-    session = session_manager.resume_session(payload.room_id, payload.role, db)
+    session = await session_manager.resume_session(payload.room_id, payload.role, db)
     return SessionStateResponse.model_validate(session)
 
 
@@ -446,12 +449,13 @@ def resume_session(
 # SESSION LIFECYCLE — MUTUAL END
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @router.post(
     "/end-session",
     response_model = SessionStateResponse,
     summary        = "Request or confirm session end (requires both partners)",
 )
-def end_session(
+async def end_session(
     payload:          EndSessionRequest,
     background_tasks: BackgroundTasks,
     db:               DBSession = Depends(get_db),
@@ -479,7 +483,7 @@ def end_session(
     Raises 404 if the room doesn't exist.
     Raises 403 if the partner hasn't joined.
     """
-    session = session_manager.request_end_session(
+    session = await session_manager.request_end_session(
         payload.room_id,
         payload.role,
         db,

@@ -584,7 +584,8 @@ def set_typing_status(room_id: str, role: str, is_typing: bool, db: DBSession) -
 # LIFECYCLE — CRISIS MANAGEMENT
 # ─────────────────────────────────────────────────────────────────────────────
 
-def submit_crisis_ready(room_id: str, role: str, db: DBSession) -> TherapySession:
+
+async def submit_crisis_ready(room_id: str, role: str, db: DBSession) -> TherapySession:
     """
     Records that one partner has pressed "I'm ready" after a crisis pause.
 
@@ -612,6 +613,8 @@ def submit_crisis_ready(room_id: str, role: str, db: DBSession) -> TherapySessio
 
     db.commit()
     db.refresh(session)
+    await _dispatch(room_id, {"type": "state_update", "session_changed": True})
+    
     return session
 
 
@@ -631,7 +634,8 @@ def _ensure_crisis_lock(session: TherapySession) -> None:
 # LIFECYCLE — USER-INITIATED PAUSE
 # ─────────────────────────────────────────────────────────────────────────────
 
-def toggle_pause(room_id: str, role: str, duration_minutes: int, db: DBSession) -> TherapySession:
+
+async def toggle_pause(room_id: str, role: str, duration_minutes: int, db: DBSession) -> TherapySession:
     """
     Either partner can pause unilaterally — unlike crisis pause, this is
     symmetric and does not require the other partner's agreement to start.
@@ -654,11 +658,13 @@ def toggle_pause(room_id: str, role: str, duration_minutes: int, db: DBSession) 
     db.commit()
     db.refresh(session)
 
+    await _dispatch(room_id, {"type": "state_update", "session_changed": True})
+
     logger.info(f"Room {room_id!r} paused by '{role}' for {duration_minutes} minutes.")
     return session
 
 
-def resume_session(room_id: str, role: str, db: DBSession) -> TherapySession:
+async def resume_session(room_id: str, role: str, db: DBSession) -> TherapySession:
     """
     Ends a user-initiated pause early. No-op (idempotent) if the session
     isn't currently paused.
@@ -671,6 +677,7 @@ def resume_session(room_id: str, role: str, db: DBSession) -> TherapySession:
         session.last_activity_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(session)
+        await _dispatch(room_id, {"type": "state_update", "session_changed": True})
         logger.info(f"Room {room_id!r} resumed early by '{role}'.")
 
     return session
@@ -680,7 +687,7 @@ def resume_session(room_id: str, role: str, db: DBSession) -> TherapySession:
 # LIFECYCLE — MUTUAL SESSION END
 # ─────────────────────────────────────────────────────────────────────────────
 
-def request_end_session(
+async def request_end_session(
     room_id:          str,
     role:             str,
     db:               DBSession,
@@ -703,6 +710,7 @@ def request_end_session(
         session.end_requested_by = role
         db.commit()
         db.refresh(session)
+        await _dispatch(room_id, {"type": "state_update", "session_changed": True})
         logger.info(f"'{role}' requested to end session {room_id!r}. Awaiting confirmation.")
         return session
 
