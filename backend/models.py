@@ -510,6 +510,7 @@ class SessionInsight(Base):
     resolution_reached      = Column(Boolean, default=False, nullable=False)
     session_duration_minutes= Column(Integer, nullable=True)
 
+
     # ── Full structured insight (fallback / raw LLM output) ──────────────────
     # The complete LLM output before structured extraction.
     # Preserved in case the structured fields need to be re-extracted later
