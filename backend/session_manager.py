@@ -140,6 +140,16 @@ _RECENT_MESSAGES_FETCH_LIMIT = 12
 
 _broadcaster: Optional[Callable[[str, dict], Awaitable[None]]] = None
 
+def _serialize_message(msg: ChatMessage) -> dict:
+    """
+    Converts a ChatMessage ORM object into a plain JSON-safe dict for
+    WebSocket dispatch. Required because websocket_manager.broadcast_to_room
+    calls websocket.send_json() directly, which cannot serialize ORM
+    objects on its own.
+    """
+    from backend.schemas import MessageResponse
+    return MessageResponse.model_validate(msg).model_dump(mode="json")
+
 
 def register_broadcaster(fn: Callable[[str, dict], Awaitable[None]]) -> None:
     """
@@ -926,7 +936,7 @@ async def _maybe_redirect_idle_partner(session: TherapySession, db: DBSession) -
 
     db.commit()
 
-    await _dispatch(session.room_id, {"type": "new_message", "payload": [system_msg]})
+    await _dispatch(session.room_id, {"type": "new_message", "payload": [_serialize_message(system_msg)]})
 
     logger.info(f"Idle note posted in room {session.room_id!r}: {idle_role} → {other_role}")
 
@@ -1034,7 +1044,12 @@ async def process_user_message(
             db.add(ai_msg)
             db.commit()
 
-            await _dispatch(room_id, {"type": "message", "messages": [user_msg, ai_msg]})
+            await _dispatch(room_id, {
+
+                "type": "new_message",
+                "messages": [_serialize_message(user_msg), _serialize_message(ai_msg)],
+            })
+
             return {"session": session, "new_messages": [user_msg, ai_msg], "no_op": False}
 
         cleaned_text = preflight.cleaned_text
@@ -1120,7 +1135,11 @@ async def process_user_message(
         db.refresh(ai_msg)
 
         # ── Step 9: Real-time dispatch ─────────────────────────────────────────
-        await _dispatch(room_id, {"type": "message", "messages": [user_msg, ai_msg]})
+
+        await _dispatch(room_id, {
+            "type": "new_message",
+            "messages": [_serialize_message(user_msg), _serialize_message(ai_msg)],
+        })
 
         return {"session": session, "new_messages": [user_msg, ai_msg], "no_op": False}
 
@@ -1138,6 +1157,7 @@ async def process_user_message(
             content         = "Something went wrong on my end — could you try sending that again?",
             extra_data      = {"action": "pipeline_error"},
         )
+        
         db.add(fallback_msg)
         db.commit()
         db.refresh(session)
