@@ -861,16 +861,35 @@ async def refresh_session_state(room_id: str, db: DBSession) -> TherapySession:
 async def _maybe_redirect_idle_partner(session: TherapySession, db: DBSession) -> None:
     """
     If one partner has held the floor for longer than the idle timeout with
-    no activity, generates a warm redirect inviting the other partner to
-    speak instead. Guarded against repeat-firing by checking last_action —
-    only fires once per idle period, not on every single poll.
+    no activity, posts a neutral system note and switches the floor to the
+    other partner.
+
+    Deliberately NOT an LLM-generated clinical message. Three reasons:
+        1. There is no reliable way to actually confirm a partner is "gone"
+           versus just thinking — manufacturing a confident-sounding clinical
+           observation about an unverified state risks sounding presumptuous
+           or judgmental exactly when warmth matters most.
+        2. The previous design addressed the OTHER partner about the idle
+           one ("invite Cloud to share while Sky is away") — this frames the
+           idle partner as a topic of discussion rather than someone taking
+           a normal pause, which is the opposite of what this moment needs.
+        3. It's free and instant. No LLM round trip, no risk of an awkward
+           generated phrasing, no token cost for something that should be
+           a simple, calm, factual statement.
+
+    The message is stored with sender="system", not sender="ai" — it is
+    Alinda's room narrating a structural fact, not Alinda speaking
+    clinically. Both partners see it identically in the shared transcript;
+    there is no special re-entry handling when the idle partner returns —
+    they simply see the message and what followed, like anyone catching
+    up on a conversation.
     """
     if session.mode != "guided":
         return
     if session.current_turn not in ("a", "b"):
         return
     if session.last_action == "idle_redirect":
-        return
+        return   # Already fired for this idle period — don't repeat on every poll
 
     last_activity = session.last_activity_at or session.session_started_at
     if last_activity is None:
@@ -882,66 +901,34 @@ async def _maybe_redirect_idle_partner(session: TherapySession, db: DBSession) -
     if elapsed < _IDLE_TIMEOUT_SECONDS:
         return
 
-    idle_role   = session.current_turn
-    other_role  = "b" if idle_role == "a" else "a"
-    idle_name   = session.name_a if idle_role == "a" else session.name_b
-    other_name  = session.name_b if idle_role == "a" else session.name_a
+    idle_role  = session.current_turn
+    other_role = "b" if idle_role == "a" else "a"
+    idle_name  = session.name_a if idle_role == "a" else session.name_b
+    other_name = session.name_b if idle_role == "a" else session.name_a
 
-    decision = {
-        "action":         "idle_redirect",
-        "target":          other_role,
-        "speaker":          idle_role,
-        "quote":            "",
-        "feeling":          None,
-        "system_message":  (
-            f"{idle_name} appears to have stepped away or become occupied. "
-            f"Gently invite {other_name} to share instead, without making "
-            f"{idle_name} feel judged for needing a moment."
-        ),
-        "confidence":       "high",
-        "exercise":          None,
-        "mode":              session.mode,
-    }
-    neutral_analysis = {"is_abusive": False, "toxicity": 0, "crisis": "none"}
-
-    recent_messages = (
-        db.query(ChatMessage)
-        .filter(ChatMessage.room_id == session.room_id)
-        .order_by(ChatMessage.timestamp.desc())
-        .limit(_RECENT_MESSAGES_FETCH_LIMIT)
-        .all()
-    )
-    recent_messages.reverse()
-
-    llm_result = await generate_session_response(
-        name_a            = session.name_a,
-        name_b            = session.name_b,
-        recent_messages   = recent_messages,
-        analysis          = neutral_analysis,
-        decision          = decision,
-        partner_profile_a = session.partner_profile_a,
-        partner_profile_b = session.partner_profile_b,
-        session_insight    = session.prior_session_summary,
+    note_text = (
+        f"It looks like {idle_name} has taken a little break. "
+        f"{other_name} can continue for now — we'll pick back up together when ready."
     )
 
-    ai_message = ChatMessage(
+    system_msg = ChatMessage(
         room_id      = session.room_id,
-        sender       = "ai",
-        message_type = "ai",
-        content      = llm_result["message"],
-        extra_data   = {"action": "idle_redirect", "mode": session.mode},
+        sender       = "system",
+        message_type = "system",
+        content      = note_text,
+        extra_data   = {"type": "idle_redirect", "mode": session.mode},
     )
-    db.add(ai_message)
+    db.add(system_msg)
 
-    session.current_turn  = other_role
-    session.last_action    = "idle_redirect"
-    session.last_target     = other_role
+    session.current_turn = other_role
+    session.last_action  = "idle_redirect"
+    session.last_target  = other_role
 
     db.commit()
 
-    await _dispatch(session.room_id, {"type": "idle_redirect", "message": llm_result["message"]})
+    await _dispatch(session.room_id, {"type": "new_message", "payload": [system_msg]})
 
-    logger.info(f"Idle redirect fired in room {session.room_id!r}: {idle_role} → {other_role}")
+    logger.info(f"Idle note posted in room {session.room_id!r}: {idle_role} → {other_role}")
 
 
 
