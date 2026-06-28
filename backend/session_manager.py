@@ -101,6 +101,7 @@ from ai.intake_analyzer import analyze_both_partners
 from ai.llm_client import generate_session_opening, generate_session_response
 from ai.mediator_logic import decide_mediation
 from ai.session_summarizer import summarize_session
+from ai.intake_analyzer import IntakeAnalysisResult
 
 logger = logging.getLogger(__name__)
 
@@ -169,29 +170,50 @@ async def _dispatch(room_id: str, payload: dict) -> None:
 # INTERNAL HELPER — SESSION STYLE RESOLUTION
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _resolve_session_style(style_a: Optional[str], style_b: Optional[str]) -> str:
-    """
-    Merges two partners' independently chosen session styles into one
-    session-level style, used to calibrate Alinda's tone in prompts.py.
+# Replace _resolve_session_style with a version that takes the two
+# IntakeAnalysisResult objects (already available in submit_intake at
+# the exact point _resolve_session_style is currently called) rather
+# than just the two style strings, so it can read profile.confidence
+# and the fragility signal already computed in mediator_logic's trait
+# vocabulary.
 
-    Rule, in priority order:
-        1. If both chose the same style, use it.
-        2. If either chose "gentle", honor it — never override a request
-           for gentleness with anything more direct.
-        3. If the remaining pair is direct+practical, both are action-oriented
-           enough to merge into "practical".
-        4. Otherwise, fall back to "balanced" — a safe middle ground.
+def _resolve_session_style(
+    style_a: Optional[str],
+    style_b: Optional[str],
+    result_a: "IntakeAnalysisResult",
+    result_b: "IntakeAnalysisResult",
+) -> tuple[str, str]:
+    """
+    Returns (resolved_session_style, style_resolution_tag).
+
+    Tier 1 — Safety override: if either partner's intake profile signals
+    high fragility (low confidence + a blind_spot/attachment_wound
+    centered on acute distress is a weak signal on its own — the
+    deliberately conservative check here is profile.confidence == "low"
+    combined with that partner having chosen "gentle" themselves; we do
+    NOT override a partner INTO gentle against their own stated choice,
+    only honor it more strongly when they asked for it while fragile).
+
+    Tier 2 — styles differ, neither flagged fragile: no shared style is
+    forced. session_style becomes a neutral tone-calibration default
+    ("balanced") for Alinda's overall voice; the canvas itself goes
+    asymmetric client-side using style_a / style_b directly.
+
+    Tier 3 — styles match: trivial case, return the shared style.
     """
     a = style_a or "balanced"
     b = style_b or "balanced"
 
     if a == b:
-        return a
-    if "gentle" in (a, b):
-        return "gentle"
-    if {a, b} == {"direct", "practical"}:
-        return "practical"
-    return "balanced"
+        return a, "matched"
+
+    a_fragile = result_a.profile.confidence == "low" and a == "gentle"
+    b_fragile = result_b.profile.confidence == "low" and b == "gentle"
+
+    if a_fragile or b_fragile:
+        return "gentle", "safety_override"
+
+    return "balanced", "asymmetric"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -500,8 +522,11 @@ async def submit_intake(
         session.partner_profile_a = result_a.instructional_text
         session.partner_profile_b = result_b.instructional_text
 
-        resolved_style = _resolve_session_style(session.session_style_a, session.session_style_b)
+        resolved_style, resolution_tag = _resolve_session_style(
+            session.session_style_a, session.session_style_b, result_a, result_b
+        )
         session.session_style = resolved_style
+        session.style_resolution = resolution_tag
 
         # Forward-compatible lookup for a returning couple's prior insight.
         # couple_profile_id is never populated until Phase 2 Block 8 (user

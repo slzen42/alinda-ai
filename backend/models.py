@@ -249,6 +249,16 @@ class TherapySession(Base):
     # Set by session_manager when both intakes are submitted.
     session_style = Column(String, default="balanced", nullable=True)
 
+    # In TherapySession, near session_style:
+
+    # Records which resolution tier determined session_style and whether
+    # asymmetric per-partner canvas rendering is in effect. Computed once
+    # at session start in session_manager.submit_intake, never recomputed
+    # mid-session — a style mismatch resolved at minute 1 should not flip
+    # later just because behavioral_ledger evolves.
+    # Values: "safety_override" | "asymmetric" | "matched"
+    style_resolution = Column(String, default="matched", nullable=True)
+
     # ── Crisis Management ─────────────────────────────────────────────────────
     # When in crisis_pause mode, this holds the datetime the lock expires.
     # After expiry, both partners must press "I'm ready" to resume.

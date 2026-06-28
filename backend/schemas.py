@@ -370,6 +370,12 @@ class SessionStateResponse(BaseModel):
     name_a:   Optional[str] = None
     name_b:   Optional[str] = None
 
+
+        # Add to SessionStateResponse:
+    session_style_a:  Optional[str] = None
+    session_style_b:  Optional[str] = None
+    style_resolution: Optional[str] = "matched"
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
     phase: str                   # SessionLifecyclePhase — outer shell state
 

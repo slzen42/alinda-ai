@@ -687,11 +687,13 @@ _STYLE_GUIDANCE: dict[str, str] = {
 
 
 async def generate_session_opening(
-    name_a:            str,
-    name_b:            str,
-    session_style:     str = "balanced",
-    partner_profile_a: Optional[str] = None,
-    partner_profile_b: Optional[str] = None,
+    name_a: str,
+    name_b: str,
+    intake_a: str,
+    intake_b: str,
+    session_style: str,
+    style_a: Optional[str] = None,
+    style_b: Optional[str] = None,
 ) -> str:
     """
     Generates a personalised, dynamic opening message for the session.
@@ -713,6 +715,15 @@ async def generate_session_opening(
         Clean opening message string.
         Falls back to a warm static message on failure — session never hangs.
     """
+    mismatch_block = ""
+    if style_a and style_b and style_a != style_b:
+        from ai.prompts import _MISMATCH_ACKNOWLEDGMENT_TEMPLATE
+        mismatch_block = _MISMATCH_ACKNOWLEDGMENT_TEMPLATE.format(
+            name_a=name_a,
+            name_b=name_b,
+            style_a=style_a,
+            style_b=style_b
+        )
     # Static fallback — always available, used if generation fails
     static_fallback = (
         f"Hello {name_a} and {name_b}.\n\n"
@@ -725,10 +736,10 @@ async def generate_session_opening(
 
     # Therapist briefing — tone calibration only, never content
     briefing_lines: list[str] = []
-    if partner_profile_a:
-        briefing_lines.append(f"{name_a}: {partner_profile_a.strip()}")
-    if partner_profile_b:
-        briefing_lines.append(f"{name_b}: {partner_profile_b.strip()}")
+    if intake_a:
+        briefing_lines.append(f"{name_a}: {intake_a.strip()}")
+    if intake_b:
+        briefing_lines.append(f"{name_b}: {intake_b.strip()}")
 
     briefing_block = ""
     if briefing_lines:
@@ -741,6 +752,7 @@ async def generate_session_opening(
     user_prompt = (
         f"Open a session with {name_a} and {name_b}.\n"
         f"Style: {style_note}"
+        f"{mismatch_block}\n"
         f"{briefing_block}\n\n"
         f"After welcoming them, invite {name_a} to begin by sharing "
         f"what brought them here today."

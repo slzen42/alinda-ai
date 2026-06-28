@@ -142,6 +142,16 @@ def get_max_tokens(action: str) -> int:
     """Returns the max tokens for a given action, falling back to default."""
     return MAX_TOKENS.get(action, MAX_TOKENS["_default"])
 
+# In ai/prompts.py, new constant near _STYLE_GUIDANCE:
+
+_MISMATCH_ACKNOWLEDGMENT_TEMPLATE = (
+    "{name_a} and {name_b} arrived today wanting slightly different things "
+    "from this space — one leaning toward {style_a}, the other toward "
+    "{style_b}. Acknowledge this directly and warmly in your opening, in one "
+    "sentence, before inviting {name_a} to begin. Do not make it sound like "
+    "a problem to solve — frame it as something you will hold space for."
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SYSTEM PROMPT
