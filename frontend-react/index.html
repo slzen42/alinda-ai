@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+
+    <meta name="theme-color" content="#EDEAE3" id="theme-meta" />
+
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('alinda-theme');
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var isDark = saved === 'dark' || (saved !== 'light' && prefersDark);
+
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+            var t = document.getElementById('theme-meta');
+            if (t) t.setAttribute('content', '#1A1C1E'); // Titan Base
+          }
+        } catch (e) {
+          /* localStorage or matchMedia unavailable — light mode is the safe default */
+        }
+      })();
+    </script>
+
+    <!--
+      Anti-flash resolver — runs synchronously before first paint,
+      before React mounts, before any stylesheet is applied.
+
+      Reads the user's saved theme preference from localStorage (written
+      by store/themeStore.js once the app is running) or falls back to
+      the OS-level prefers-color-scheme signal. Sets the 'dark' class on
+      <html> and updates the theme-color meta tag immediately, so both
+      Tailwind's dark: variant and the browser's status bar chrome are
+      correct on the very first frame — eliminating any light/dark flash.
+
+      The localStorage key 'alinda-theme' must match exactly what
+      store/themeStore.js writes. If that key name ever changes there,
+      change it here too. There is no other coupling between this script
+      and the rest of the app.
+    -->
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('alinda-theme');
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var isDark = saved === 'dark' || (saved !== 'light' && prefersDark);
+
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+            var t = document.querySelector('meta[name="theme-color"][data-default]');
+            if (t) t.setAttribute('content', '#1A1C1E');
+          }
+        } catch (e) {
+          /* localStorage or matchMedia unavailable — light mode is the safe default */
+        }
+      })();
+    </script>
+
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+
+    <!--
+      Dual theme-color declarations.
+
+      The media-attributed pair handles OS-level preference automatically
+      and requires no JavaScript. The data-default tag is the one the
+      anti-flash script above and useTheme.js update dynamically when the
+      user overrides their OS preference inside the app — targeting it by
+      the data-default attribute rather than relying on query-selector
+      order avoids fragility if tag order ever changes.
+    -->
+    <meta name="theme-color" content="#EDEAE3" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1A1C1E" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#EDEAE3" data-default />
+
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <!--
+      black-translucent is correct here: it allows our background color
+      to extend behind the iOS status bar, giving the full-bleed canvas
+      the appearance of reaching the very top of the screen. The status
+      bar icons will be white, which is correct against the dark marble
+      and legible (if slightly lower contrast) against the light marble.
+      An acceptable trade-off for the immersive effect.
+    -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Alinda" />
+
+    <meta name="mobile-web-app-capable" content="yes" />
+
+    <meta name="format-detection" content="telephone=no" />
+
+    <title>Alinda</title>
+    <meta
+      name="description"
+      content="A quiet space for couples to be heard, together."
+    />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.json" />
+
+  </head>
+  <body style="margin: 0;">
+    <noscript>
+      <div style="
+        font-family: Georgia, serif;
+        max-width: 32rem;
+        margin: 4rem auto;
+        padding: 0 1.5rem;
+        text-align: center;
+        color: #4A4540;
+        line-height: 1.6;
+      ">
+        Alinda needs JavaScript to open this room. Please enable it in your
+        browser to continue.
+      </div>
+    </noscript>
+
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
