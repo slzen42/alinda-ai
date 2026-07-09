@@ -1,0 +1,435 @@
+/*
+  src/index.css
+
+  The material dictionary for Alinda.
+
+  This file contains exactly four things and nothing else:
+    1. Tailwind engine directives
+    2. The CSS custom property token system (Olympian light + Titan dark)
+    3. Global physics and resets (native-app feel, anti-aliasing, overscroll)
+    4. Custom utility classes for app-specific visual effects
+
+  What this file intentionally does NOT contain:
+    Layout rules (no flex, no grid, no padding values)
+    Component-specific styles (those live in component files)
+    Animations (those live in animations/motionTokens.js via Framer Motion)
+    Page-level rules of any kind
+
+  The CSS custom property values below must stay in sync with the token
+  list in tailwind.config.js. If a variable name changes here, it must
+  change there too. There is no automatic enforcement of this — it is a
+  manual contract.
+*/
+
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* 1. TAILWIND ENGINE DIRECTIVES                                              */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* 2. TOKEN SYSTEM — OLYMPIAN LIGHT + TITAN DARK                              */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+@layer base {
+
+  /* ── Olympian (Light) — :root ────────────────────────────────────────── */
+  /*
+    The weathered marble of the Acropolis frieze. Not white — the warm
+    gray-ivory of stone that has spent centuries outdoors, absorbing
+    atmosphere. Cooler on exposed faces, warmer in the grooves.
+  */
+  :root {
+    /* Surfaces */
+    --surface-base:    #EDEAE3;   /* ground plane — raw marble */
+    --surface-raised:  #F2EFE9;   /* cards, input fields — facing the light */
+    --surface-overlay: #F7F4EF;   /* overlays, modals — highest and lightest */
+    --surface-edge:    #D4D0C8;   /* subtle borders — shadow in the grooves */
+
+    /* Text */
+    --text-primary:    #2E2B27;   /* warm charcoal-brown ink, not pure black */
+    --text-secondary:  #6B645C;   /* mid-tone — labels, captions */
+    --text-muted:      #9A9087;   /* placeholder, disabled — stone in shadow */
+    --text-inverse:    #F2EFE9;   /* text on dark surfaces in light mode */
+
+    /* Accent: Terracotta — fired clay, Attic pottery */
+    --accent-terracotta:        #C17A5B;
+    --accent-terracotta-soft:   rgba(193, 122, 91, 0.10);
+    --accent-terracotta-strong: #9B5A3E;
+
+    /* Accent: Bronze — oxidised bronze-green of ancient instruments */
+    --accent-bronze:        #7A8C6E;
+    --accent-bronze-soft:   rgba(122, 140, 110, 0.10);
+    --accent-bronze-strong: #5C6E52;
+
+    /* Crisis / Safety — aged ochre, not alarm-red */
+    --crisis:       #8B7355;
+    --crisis-soft:  rgba(139, 115, 85, 0.10);
+
+    /* Shadows — warm, directional downward, never harsh */
+    --shadow-stone:       rgba(42, 38, 33, 0.14);
+    --shadow-stone-deep:  rgba(42, 38, 33, 0.24);
+    --shadow-ambient:     rgba(42, 38, 33, 0.08);
+
+    /* Glows — bronze light rising upward from the floor */
+    --glow-turn:    rgba(122, 140, 110, 0.22);
+    --glow-alinda:  rgba(122, 140, 110, 0.18);
+
+    /* Grain overlay — applied via the .grain utility class below */
+    --grain-opacity: 0.04;
+
+    /* Theme transition speed — how long the crossfade takes when toggling */
+    --theme-transition: 500ms;
+  }
+
+
+  /* ── Titan (Dark) — .dark ─────────────────────────────────────────────── */
+  /*
+    The dark marble of Mount Othrys. The geological opposite of the
+    Olympian palette — a cool near-black with blue-gray undertones,
+    the deep gray-green of actual antique marble in the Naples
+    Archaeological Museum. Cold, heavy, ancient. Not void — stone.
+  */
+  .dark {
+    /* Surfaces */
+    --surface-base:    #1A1C1E;   /* the Titan stone itself */
+    --surface-raised:  #22252A;   /* raised surfaces catch a little cold light */
+    --surface-overlay: #2A2E35;   /* overlays — the deepest chamber */
+    --surface-edge:    #343840;   /* edges — cracks in the dark stone */
+
+    /* Text */
+    --text-primary:    #D8D5CF;   /* limestone-white against dark ground */
+    --text-secondary:  #9A9590;   /* worn, lower contrast */
+    --text-muted:      #5C5F65;   /* barely legible — appropriately receded */
+    --text-inverse:    #2E2B27;   /* text on light surfaces in dark mode */
+
+    /* Accent: Terracotta — deeper, more ember in Titan darkness */
+    --accent-terracotta:        #A0604A;
+    --accent-terracotta-soft:   rgba(160, 96, 74, 0.12);
+    --accent-terracotta-strong: #C17A5B;   /* brighter against dark */
+
+    /* Accent: Bronze — more luminous in Titan darkness */
+    /*   In the myth, the Titans' domain had its own cold phosphorescent  */
+    /*   light. The bronze accent gains presence here.                    */
+    --accent-bronze:        #8FA88E;
+    --accent-bronze-soft:   rgba(143, 168, 142, 0.12);
+    --accent-bronze-strong: #A8C4A6;   /* almost glowing */
+
+    /* Crisis / Safety — cool ochre, even more muted against the dark */
+    --crisis:       #A08060;
+    --crisis-soft:  rgba(160, 128, 96, 0.12);
+
+    /* Shadows — much deeper, cooler */
+    --shadow-stone:       rgba(0, 0, 0, 0.32);
+    --shadow-stone-deep:  rgba(0, 0, 0, 0.52);
+    --shadow-ambient:     rgba(0, 0, 0, 0.24);
+
+    /* Glows — the luminous bronze is more pronounced in darkness */
+    --glow-turn:    rgba(143, 168, 142, 0.28);
+    --glow-alinda:  rgba(143, 168, 142, 0.22);
+
+    /* Grain opacity — slightly stronger on dark ground for texture */
+    --grain-opacity: 0.055;
+  }
+
+
+  /* ─────────────────────────────────────────────────────────────────────── */
+  /* 3. GLOBAL PHYSICS & RESETS                                              */
+  /* ─────────────────────────────────────────────────────────────────────── */
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    /* No transitions on the wildcard — specific elements get transitions
+       through Framer Motion or the targeted rules below. A wildcard
+       transition is the most common cause of janky, laggy-feeling UIs. */
+  }
+
+  html {
+    /* Overscroll restraint — locks the canvas to the glass.
+       Without this, iOS rubber-bands past the top and bottom of the
+       page, revealing the void behind the app and completely breaking
+       the "sealed room" feeling of the LivingCanvas. */
+    overscroll-behavior: none;
+
+    /* Prevent mobile browsers from inflating text sizes on rotation.
+       Protects the typographic scale we've calculated for every
+       viewport size. */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+
+    /* Theme crossfade — applies only to the two properties that change
+       when the dark class toggles. Deliberately NOT a wildcard transition
+       (which would make every animated element feel sluggish). This gives
+       the Olympian↔Titan switch a half-second fade rather than a strobe. */
+    transition:
+      background-color var(--theme-transition) ease,
+      color            var(--theme-transition) ease;
+
+    /* The root background — set here rather than on body so it covers
+       the full html element, including any area revealed by overscroll
+       on Android (which doesn't fully respect overscroll-behavior). */
+    background-color: var(--surface-base);
+    color:            var(--text-primary);
+  }
+
+  body {
+    /* Full viewport — the LivingCanvas is full-bleed and the body must
+       not introduce any scrollable area of its own. All scrolling in
+       the app happens in explicitly overflow-y: auto containers
+       (the chat transcript), never on the body itself. */
+    min-height: 100dvh;
+    overflow: hidden;
+
+    /* Inherits surface-base and text-primary from html above. */
+
+    /* Font rendering — enforces sub-pixel antialiasing on macOS and
+       iOS, making Cormorant Garamond feel precisely carved rather than
+       slightly blurry. On Windows, grayscale-antialiased is the
+       better choice; browsers handle this automatically per platform
+       when both are declared. */
+    -webkit-font-smoothing:  antialiased;
+    -moz-osx-font-smoothing: grayscale;
+
+    /* Prevent long words (or partner names) from breaking layout on
+       narrow mobile screens. */
+    overflow-wrap: break-word;
+    word-break:    break-word;
+
+    /* Disable tap highlight on iOS — the custom glow/press states we've
+       designed replace this. The default blue flash would feel completely
+       wrong against the marble aesthetic. */
+    -webkit-tap-highlight-color: transparent;
+
+    /* Prevent text selection during swipe gestures in the chat.
+       Partners can still long-press to select individual messages —
+       the CSS user-select on specific elements controls that. */
+    -webkit-user-select: none;
+    user-select:         none;
+  }
+
+  /* Re-enable text selection specifically for message content and
+     input fields — the body rule above is intentionally aggressive,
+     and we claw back selection where it's genuinely needed. */
+  input,
+  textarea,
+  [data-selectable] {
+    -webkit-user-select: text;
+    user-select:         text;
+  }
+
+  /* Focus ring — replace the browser's default blue outline with a
+     terracotta ring that matches the palette. Applied to all focusable
+     elements. Kept visible for keyboard navigation accessibility. */
+  :focus-visible {
+    outline:        2px solid var(--accent-terracotta);
+    outline-offset: 3px;
+    border-radius:  4px;
+  }
+
+  /* Remove default focus ring for pointer/touch interactions —
+     only show it for keyboard navigation (handled by :focus-visible). */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  /* Safe area insets — handles the iPhone notch and home indicator bar.
+     The chat input pinned to the bottom of the screen needs to clear
+     the home indicator on iPhone X+. Applied to the root element so
+     components can reference env(safe-area-inset-*) in their own
+     padding without duplicating the env() calls everywhere. */
+  #root {
+    padding-top:    env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left:   env(safe-area-inset-left);
+    padding-right:  env(safe-area-inset-right);
+    min-height:     100dvh;
+    position:       relative;
+    overflow:       hidden;
+  }
+
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* 4. CUSTOM UTILITY CLASSES                                                  */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+@layer utilities {
+
+  /* ── Scrollbar concealment ─────────────────────────────────────────────── */
+  /*
+    Applied to the chat transcript container — the scroll still works
+    exactly as expected; only the visual scrollbar track disappears.
+    Preserves the immersive canvas effect by removing the one element
+    that most clearly signals "this is a browser, not a room."
+  */
+  .scrollbar-hide {
+    -ms-overflow-style:  none;   /* IE / Edge */
+    scrollbar-width:     none;   /* Firefox */
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;               /* Chrome / Safari / Opera */
+  }
+
+
+  
+  /* ── Asymmetric message bubbles ────────────────────────────────────────── */
+  /*
+    Creates the "natural brushstroke" quality for message bubbles —
+    three corners are soft (12px), one corner is sharp (3px), pointing
+    back toward the speaker like the tail of a speech bubble but without
+    the literal triangle. Applied to MessageBubble.jsx via className.
+
+    .bubble-self:    the sending partner's own messages (sharp bottom-right)
+    .bubble-other:   the receiving partner's messages  (sharp bottom-left)
+    .bubble-alinda:  Alinda's messages                 (sharp top-left,
+                     since she speaks from the center/top of the exchange)
+  */
+  .bubble-self {
+    border-radius: 12px 12px 3px 12px;
+  }
+
+  .bubble-other {
+    border-radius: 12px 12px 12px 3px;
+  }
+
+  .bubble-alinda {
+    border-radius: 3px 12px 12px 12px;
+  }
+
+
+  /* ── Grain texture overlay ─────────────────────────────────────────────── */
+  /*
+    Creates the film-grain / weathered-stone surface texture that runs
+    across the entire app. Applied as a pseudo-element overlay on the
+    body or on specific components.
+
+    This uses a CSS noise technique (SVG filter via a data URI) rather
+    than a loaded image file, meaning it adds zero network requests and
+    is generated natively by the browser's compositor thread — it does
+    not compete with the LivingCanvas for GPU resources.
+
+    The --grain-opacity variable differs between Olympian and Titan
+    (0.04 vs 0.055), so the grain is slightly more pronounced on the
+    darker ground where it's needed for texture without an image file.
+  */
+  .grain::after {
+    content:          '';
+    position:         fixed;
+    inset:            0;
+    pointer-events:   none;
+    z-index:          9999;
+    opacity:          var(--grain-opacity);
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    background-size:   128px 128px;
+  }
+
+
+  /* ── Textured text ─────────────────────────────────────────────────────── */
+  /*
+    For large display text (the Alinda wordmark, screen titles) — allows
+    the grain texture to show through the letterforms themselves, making
+    the text feel as though it's carved into or painted onto the surface
+    rather than printed on top of it.
+
+    Apply only to text elements, never to containers. The -webkit-
+    prefix is required for Safari/iOS; the unprefixed version is for
+    Firefox/Chrome.
+  */
+  .text-textured {
+    -webkit-background-clip: text;
+    background-clip:         text;
+    -webkit-text-fill-color: transparent;
+    background-image:        url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E"),
+                             linear-gradient(var(--text-primary), var(--text-primary));
+    background-blend-mode:   multiply;
+  }
+
+
+  /* ── Stone inset effect ────────────────────────────────────────────────── */
+  /*
+    Used for input fields and cards that should appear recessed into
+    the marble surface — as though pressed into stone — rather than
+    floating above it. Pairs with the stone-inset box-shadow from
+    tailwind.config.js.
+  */
+  .stone-inset {
+    box-shadow:       inset 0 1px 4px 0 var(--shadow-stone);
+    background-color: var(--surface-base);
+  }
+
+  .stone-inset-deep {
+    box-shadow:       inset 0 2px 8px 0 var(--shadow-stone-deep);
+    background-color: var(--surface-base);
+  }
+
+
+  /* ── Turn glow ─────────────────────────────────────────────────────────── */
+  /*
+    The ambient bronze light rising from the bottom of the screen on the
+    active speaker's device. Applied to a fixed element at the bottom of
+    ChatScreen.jsx. Driven by Framer Motion opacity animation, not a
+    CSS animation — keeping animation control in motionTokens.js.
+
+    The gradient rises upward from the very bottom edge, fading to
+    transparent before it reaches the message input, so it reads as
+    ambient floor-light rather than a UI highlight.
+  */
+  .turn-glow {
+    background: linear-gradient(
+      to top,
+      var(--glow-turn)    0%,
+      rgba(0, 0, 0, 0)    60%
+    );
+  }
+
+
+  /* ── Alinda presence pulse ─────────────────────────────────────────────── */
+  /*
+    A soft radial glow centered on Alinda's name/mark indicator during
+    free_chat mode when she is observing but not responding. The actual
+    pulsing animation is in Framer Motion — this class only declares the
+    glow shape.
+  */
+  .alinda-glow {
+    box-shadow: 0 0 20px 4px var(--glow-alinda);
+  }
+
+
+  /* ── Frosted overlay ───────────────────────────────────────────────────── */
+  /*
+    The backdrop for pause and crisis overlays. A heavy blur over the
+    LivingCanvas reads as frosted marble — the view through hammered
+    ancient glass — rather than the modern "glassmorphism" effect that
+    would undermine the aesthetic. The color tint is the surface-overlay
+    token at ~85% opacity, so the canvas is still faintly visible as
+    depth beneath the frost.
+  */
+  .frosted-overlay {
+    backdrop-filter:         blur(12px) saturate(0.8);
+    -webkit-backdrop-filter: blur(12px) saturate(0.8);
+    background-color:        color-mix(in srgb, var(--surface-overlay) 85%, transparent);
+  }
+
+
+  /* ── No tap flash ──────────────────────────────────────────────────────── */
+  /*
+    Helper class for interactive elements that should not show any
+    browser-native tap/press feedback — buttons, the style selector
+    cards, the copy-code trigger. Our Framer Motion press states replace
+    the native behavior entirely.
+  */
+  .no-tap-flash {
+    -webkit-tap-highlight-color: transparent;
+    user-select:                 none;
+    -webkit-user-select:         none;
+  }
+
+}
