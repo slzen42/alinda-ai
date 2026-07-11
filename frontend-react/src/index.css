@@ -84,6 +84,11 @@
 
     /* Theme transition speed — how long the crossfade takes when toggling */
     --theme-transition: 500ms;
+
+    /* Canvas glow — updated each frame by paletteBlend.js via LivingCanvas.jsx */
+    --canvas-glow-r: 122;
+    --canvas-glow-g: 140;
+    --canvas-glow-b: 110;
   }
 
 
@@ -134,6 +139,10 @@
 
     /* Grain opacity — slightly stronger on dark ground for texture */
     --grain-opacity: 0.055;
+
+    --canvas-glow-r: 143;
+    --canvas-glow-g: 168;
+    --canvas-glow-b: 142;
   }
 
 
