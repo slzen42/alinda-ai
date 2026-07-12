@@ -42,6 +42,7 @@ import {
     staggerStandard,        staggerSlow,        staggerFast,
     tapPrimary,             tapLight,
   } from './motionTokens'
+  import { easing } from 'design/tokens'
   
   
   // ─────────────────────────────────────────────────────────────────────────────
@@ -556,13 +557,3 @@ import {
     selected:   { opacity: 1, transition: transitionRevealReduced },
     hover:      { opacity: 0.65 },
   }
-  
-  
-  // ─────────────────────────────────────────────────────────────────────────────
-  // EASING RE-EXPORT
-  //
-  // Convenience — components can import easing values alongside variants
-  // from this single file rather than mixing imports from tokens and transitions.
-  // ─────────────────────────────────────────────────────────────────────────────
-  
-  export { easing } from 'design/tokens'

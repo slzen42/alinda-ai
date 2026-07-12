@@ -356,7 +356,10 @@ export default function LivingCanvas({
       // ── Step 5: Instantiate the four engines ──────────────────────────────
 
       // NoiseField — the particle system and vector field
-      const noiseField = new NoiseField(tierConfig, initialParams, width, height)
+      // NoiseField draws in CSS pixel space — the context is already scaled by ratio.
+      // Passing physical dimensions (width, height) would displace all draws by
+      // ratio× on HiDPI screens. CSS dimensions are the correct coordinate space.
+      const noiseField = new NoiseField(tierConfig, initialParams, cssWidth, cssHeight)
       noiseFieldRef.current = noiseField
 
       // PaletteBlend — the chromatic hydration engine
@@ -425,21 +428,21 @@ export default function LivingCanvas({
 
           const { width: newW, height: newH, ratio: newRatio } =
             getCanvasDimensions(newCssWidth, newCssHeight, tierConfigRef.current?.name ?? 'standard')
-
+          
           if (Math.abs(newW - canvas.width) < 2 && Math.abs(newH - canvas.height) < 2) {
-            return  // Sub-pixel change — ignore (prevents jitter on mobile scroll)
+            return
           }
-
+          
           canvas.width  = newW
           canvas.height = newH
           pixelRatioRef.current = newRatio
-
-          // Re-apply the context scale — resizing the canvas resets the transform
+          
           ctxRef.current?.setTransform(1, 0, 0, 1, 0, 0)
           ctxRef.current?.scale(newRatio, newRatio)
+          
+          // CSS dimensions — same reason as initial NoiseField construction
+          noiseFieldRef.current?.resize(newCssWidth, newCssHeight)
 
-          // Proportionally move existing particles to their new positions
-          noiseFieldRef.current?.resize(newW, newH)
         }
       })
       resizeObserver.observe(canvas)
@@ -457,7 +460,8 @@ export default function LivingCanvas({
         pixelRatioRef.current = newRatio
         ctxRef.current?.setTransform(1, 0, 0, 1, 0, 0)
         ctxRef.current?.scale(newRatio, newRatio)
-        noiseFieldRef.current?.resize(newW, newH)
+
+        noiseFieldRef.current?.resize(newCssW, newCssH)
 
         // Re-register listener for the new DPR value
         dprMql.removeEventListener('change', handleDprChange)
@@ -561,9 +565,20 @@ export default function LivingCanvas({
         setIsError(true)
       })
 
-    return () => {
-      cleanup.fn?.()
-    }
+      return () => {
+        // Set cancelled directly here — do not rely on the cleanup function
+        // returned by the async init(), which may not have resolved yet when
+        // React StrictMode's fast unmount runs. Without this, init() continues
+        // running after unmount and may call setIsReady(true) on a dead component.
+        cancelled = true
+        isLoopRunningRef.current = false
+        if (rafRef.current) {
+          cancelAnimationFrame(rafRef.current)
+          rafRef.current = null
+        }
+        // Also call the inner cleanup if it has resolved (handles event listener removal)
+        cleanup.fn?.()
+      }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   // NOTE: Empty deps are intentional. The loop is self-contained and reads
@@ -701,7 +716,7 @@ export default function LivingCanvas({
   // should not announce it. The therapeutic content lives in the React DOM.
   // ─────────────────────────────────────────────────────────────────────────────
 
-  
+
   return (
     <motion.div
       className="fixed inset-0 -z-10 overflow-hidden"
