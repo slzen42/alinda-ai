@@ -335,9 +335,24 @@
     pointer-events:   none;
     z-index:          9999;
     opacity:          var(--grain-opacity);
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  
+    /*
+      numOctaves='1' is the critical fix.
+      With 4 octaves, feTurbulence creates blob structures at multiple scales
+      (4px, 8px, 16px, 32px) simultaneously — those are the ovals you see.
+      Single octave produces pure random noise at one frequency: film grain.
+  
+      baseFrequency='0.85' with viewBox 256×256 and background-size 200px:
+      Each SVG unit = 200/256 = 0.78px
+      Each noise cell = 1/0.85 × 0.78 = 0.92px per grain element
+      This matches the fine reference grain you attached.
+  
+      type='fractalNoise' (not turbulence) — produces the organic, slightly
+      varied grain of film stock rather than the harsh digital static of turbulence.
+    */
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='1' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
     background-repeat: repeat;
-    background-size:   128px 128px;
+    background-size:   200px 200px;
   }
 
 

@@ -131,13 +131,12 @@ export class NoiseField {
     // it requires an extra fBm pass which doubles the sampling cost.
     this._useDomainWarp = tierConfig.noiseOctaves >= 3
 
-    // ── Painting params ───────────────────────────────────────────────────────
-    this._painting = paintingParams
-
-    // ── Time ─────────────────────────────────────────────────────────────────
-    this._time           = 0      // advances each frame — drives field evolution
-    this._breathPhase    = 0      // 0–2π sine cycle for breath mechanic
-    this._phaseProgress  = 0.0   // 0.0 (opening) → 1.0 (closing) — calms the field
+    // ── Time & Engine State ───────────────────────────────────────────────────
+    this._time               = 0      // advances each frame — drives field evolution
+    this._breathPhase        = 0      // 0–2π sine cycle for breath mechanic
+    this._phaseProgress      = 0.0    // 0.0 (opening) → 1.0 (closing) — calms the field
+    this._noiseSpeedOffset   = 0
+    this._settleBiasStrength = 0.0
 
     // ── Particle buffers (pre-allocated, never reallocated) ───────────────────
     // PARTICLE_STRIDE floats per particle × max particles
@@ -166,23 +165,52 @@ export class NoiseField {
     this._bloomY        = 0      // normalized 0–1
     this._bloomStrength = 0      // 0.0–BLOOM_MAX_STRENGTH, decays to 0
 
-    // ── Color state ───────────────────────────────────────────────────────────
-    // Current particle draw color as [r, g, b] integers 0–255.
-    // Updated by paletteBlend.js via updateColors() — not computed here.
-    this._particleR = 122
-    this._particleG = 140
-    this._particleB = 110
-
+    // ── Base Color State (Theme Fallbacks) ────────────────────────────────────
     // Background color (also set by paletteBlend.js)
     this._bgR = 237
     this._bgG = 234
     this._bgB = 227
 
-
-    // Add to constructor, near the other instance variable declarations:
-    this._noiseSpeedOffset    = 0
+    // Current particle draw color as [r, g, b] integers 0–255.
+    // Updated by paletteBlend.js via updateColors() — not computed here.
+    this._particleR = 122
+    this._particleG = 140
+    this._particleB = 110
+    
     this._particleOpacityMul  = 1.0
-    this._settleBiasStrength  = 0.0
+
+    // ── Painting Params, Wash Layer, & Multi-Color Arrays ─────────────────────
+    
+    // Declare defaults first — updatePaintingParams() will overwrite them
+    // on the very next line. Defaults exist only so the method has valid
+    // instance variables to overwrite rather than writing to undefined.
+    this._painting            = null
+    
+    // Painting-specific multi-color palette (from particles/*.js)
+    // When null, falls back to the single PaletteBlend theme color above.
+    this._paintingColors      = null
+    this._paintingColorCount  = 0
+
+    // The wash layer is completely separate from the particle system.
+    // Where particles create fine textural detail, the wash layer creates
+    // large soft areas of painting color — the poured washes, the stained
+    // sky, the pools of pigment. This is what makes the canvas look like
+    // a painting rather than a particle simulation.
+    //
+    // Wash circles are drawn every frame using radial gradients.
+    // Creating 1–5 gradient objects per frame (300/sec) is completely
+    // acceptable for modern JS engines. The zero-allocation law applies
+    // to the particle loop (1400 iterations), not to this.
+    this._washColors          = []
+    this._washSpeed           = 0.04
+    this._washEnabled         = false
+
+    // Call updatePaintingParams immediately — this parses paintingColors,
+    // washColors, and washSpeed out of the painting params object.
+    // Without this, the constructor sets everything to null/empty defaults
+    // and updatePaintingParams() is never called because nothing triggers
+    // a painting change in the test environment.
+    this.updatePaintingParams(paintingParams)
 
     // ── Initialization ────────────────────────────────────────────────────────
     this._initParticles()
@@ -521,12 +549,10 @@ export class NoiseField {
    */
   render(ctx, deltaMs) {
     // ── Time advance ──────────────────────────────────────────────────────────
-    // Scale time by painting's speed modifier so each painting evolves
-    // at its own characteristic rate.
     const speedMod  = this._painting.flowSpeed ?? 1.0
-    this._time      += (this._noiseSpeed + this._noiseSpeedOffset) * speedMod * (deltaMs / 16.67)   // normalize to 60fps
+    this._time      += (this._noiseSpeed + this._noiseSpeedOffset) * speedMod * (deltaMs / 16.67) 
 
-    // Breath cycle — advances independently of main time
+    // Breath cycle 
     this._breathPhase += (TWO_PI / this._tierConfig.breathPeriod) * deltaMs
     if (this._breathPhase > TWO_PI) this._breathPhase -= TWO_PI
 
@@ -546,13 +572,38 @@ export class NoiseField {
       this._updateField()
     }
 
+    // ── SAFE COLOR FALLBACKS (Prevents invisible ink bug) ─────────────────────
+    const safeBgR = this._bgR || 0;
+    const safeBgG = this._bgG || 0;
+    const safeBgB = this._bgB || 0;
+    const safeDecay = this._alphaDecay ?? 0.015;
+
     // ── Step 1: Alpha decay rectangle ─────────────────────────────────────────
-    // Covers the entire canvas with the background color at very low opacity.
-    // This dims the previous frame slightly, creating the trailing ribbons.
-    // The alphaDecay value from the tier config is mathematically correct
-    // for the target FPS — see the constructor comment on this.
-    ctx.fillStyle = `rgba(${this._bgR}, ${this._bgG}, ${this._bgB}, ${this._alphaDecay})`
+    ctx.fillStyle = `rgba(${safeBgR}, ${safeBgG}, ${safeBgB}, ${safeDecay})`
     ctx.fillRect(0, 0, this._width, this._height)
+
+    // ── Step 1b: Wash layer ───────────────────────────────────────────────────
+    this._renderWashLayer(ctx)
+
+    // ── TEMPORARY DEBUGGER: Engine State Logger ───────────────────────────────
+    // Logs roughly every 3 seconds to avoid crashing the RAF loop
+    // ── TEMPORARY DEBUGGER: Engine State Logger ───────────────────────────────
+    const nowMs = performance.now()
+    if (!this._lastLogTime || nowMs - this._lastLogTime > 3000) {
+      console.log('[NoiseField State]', {
+        bg: `rgb(${safeBgR},${safeBgG},${safeBgB})`,
+        particle: `rgb(${this._particleR|0},${this._particleG|0},${this._particleB|0})`,
+        paintingColors: this._paintingColors ? `${this._paintingColorCount} colors defined` : 'none (using theme)',
+        washColors: this._washEnabled ? `${this._washColors.length} washes` : 'no wash',
+        washEnabled:    this._washEnabled,
+        washColorCount: this._washColors?.length ?? 0,
+        washSpeed:      this._washSpeed,
+        alphaDecay:     safeDecay,
+        opacity:        this._painting?.particleOpacity ?? 0.55,
+        paintingName:   this._painting?.name ?? 'unknown',
+      })
+      this._lastLogTime = nowMs
+    }
 
     // ── Step 2: Move and draw each particle ───────────────────────────────────
     const particleSize   = this._painting.particleRadius ?? 1.2
@@ -564,31 +615,22 @@ export class NoiseField {
       const px = this._particles[base]
       const py = this._particles[base + 1]
 
-      // ── Get field angle at this particle's position ───────────────────────
       _stepWork[0] = this._lookupAngle(px, py)
 
-      // ── Add bloom contribution ────────────────────────────────────────────
       if (this._bloomActive) {
         _stepWork[0] += this._bloomContribution(px / this._width, py / this._height)
       }
 
-      // ── Painting modifier: some paintings (Twombly/Practical) add
-      // ── a per-particle angle variation that creates gestural mark-making
       if (this._painting.angleVariance > 0) {
-        // Variance is applied using the particle index as a seed so each
-        // particle has a consistent but unique deviation — not random per frame
         _stepWork[0] += this._painting.angleVariance * Math.sin(i * 0.618)
       }
 
-      // ── Compute velocity from angle ───────────────────────────────────────
-      _stepWork[1] = Math.cos(_stepWork[0]) * particleSpeed  // vx
-      _stepWork[2] = Math.sin(_stepWork[0]) * particleSpeed  // vy
+      _stepWork[1] = Math.cos(_stepWork[0]) * particleSpeed  
+      _stepWork[2] = Math.sin(_stepWork[0]) * particleSpeed  
 
-      // ── Update position ───────────────────────────────────────────────────
       this._particles[base]     = px + _stepWork[1]
       this._particles[base + 1] = py + _stepWork[2]
 
-      // ── Lifetime and age ──────────────────────────────────────────────────
       this._lifetimes[i]++
       const life    = this._lifetimes[i]
       const maxLife = this._maxLifetimes[i]
@@ -598,11 +640,9 @@ export class NoiseField {
         continue
       }
 
-      this._particles[base + 3] = life / maxLife   // age 0→1
+      this._particles[base + 3] = life / maxLife  
 
-      // ── Opacity: fade in and fade out ─────────────────────────────────────
       let opacity = this._particles[base + 2]
-
       if (life < FADE_IN_FRAMES) {
         opacity = Math.min(1, opacity + (1 / FADE_IN_FRAMES))
       } else if (life > maxLife - FADE_OUT_FRAMES) {
@@ -610,31 +650,35 @@ export class NoiseField {
       } else {
         opacity = Math.min(1, opacity + (1 / FADE_IN_FRAMES))
       }
-
       this._particles[base + 2] = opacity
 
-      // ── Edge wrapping ─────────────────────────────────────────────────────
       this._wrapEdges(base)
 
-      // Skip drawing if fully transparent
       if (opacity < 0.01) continue
 
       // ── Draw particle ─────────────────────────────────────────────────────
-      // A tiny filled circle. ctx.arc + fill is the fastest 2D canvas
-      // drawing primitive — faster than putImageData for sparse particles.
-      // We avoid ctx.save/restore (expensive) by directly setting globalAlpha.
-      const drawR = this._particleR
-      const drawG = this._particleG
-      const drawB = this._particleB
+      let drawR, drawG, drawB
+      if (this._paintingColors && this._paintingColorCount > 0) {
+        const colorIdx = (i * 3 + (i >> 3)) % this._paintingColorCount
+        drawR = this._paintingColors[colorIdx][0]
+        drawG = this._paintingColors[colorIdx][1]
+        drawB = this._paintingColors[colorIdx][2]
+      } else {
+        drawR = this._particleR
+        drawG = this._particleG
+        drawB = this._particleB
+      }
 
-      // Age-based color shift — older particles drift toward the surface color
-      // creating a sense of sedimentation. Amount controlled per painting.
       const ageMix = this._particles[base + 3] * (this._painting.ageSediment ?? 0.2)
-      const r = Math.round(drawR + (this._bgR - drawR) * ageMix)
-      const g = Math.round(drawG + (this._bgG - drawG) * ageMix)
-      const b = Math.round(drawB + (this._bgB - drawB) * ageMix)
+      // NaN Failsafes applied to the particle color math!
+      const r = Math.round(drawR + (safeBgR - drawR) * ageMix) || drawR;
+      const g = Math.round(drawG + (safeBgG - drawG) * ageMix) || drawG;
+      const b = Math.round(drawB + (safeBgB - drawB) * ageMix) || drawB;
 
-      ctx.globalAlpha = opacity * (this._painting.particleOpacity ?? 0.55) * (this._particleOpacityMul ?? 1.0)
+      let finalAlpha = opacity * (this._painting.particleOpacity ?? 0.55) * (this._particleOpacityMul ?? 1.0);
+      if (isNaN(finalAlpha)) finalAlpha = 0.85;
+
+      ctx.globalAlpha = finalAlpha
       ctx.fillStyle   = `rgb(${r},${g},${b})`
       ctx.beginPath()
       ctx.arc(
@@ -647,7 +691,6 @@ export class NoiseField {
       ctx.fill()
     }
 
-    // Reset globalAlpha so subsequent draw calls (by LivingCanvas.jsx) are unaffected
     ctx.globalAlpha = 1
   }
 
@@ -697,6 +740,31 @@ export class NoiseField {
   updatePaintingParams(paintingParams) {
     this._painting = paintingParams
     this._fieldNeedsUpdate = true
+
+    // Extract multi-color particle palette
+    if (
+      Array.isArray(paintingParams.particleColors) &&
+      paintingParams.particleColors.length > 0
+    ) {
+      this._paintingColors     = paintingParams.particleColors
+      this._paintingColorCount = paintingParams.particleColors.length
+    } else {
+      this._paintingColors     = null
+      this._paintingColorCount = 0
+    }
+
+    // Extract wash layer configuration
+    if (
+      Array.isArray(paintingParams.washColors) &&
+      paintingParams.washColors.length > 0
+    ) {
+      this._washColors  = paintingParams.washColors
+      this._washSpeed   = paintingParams.washSpeed ?? 0.04
+      this._washEnabled = true
+    } else {
+      this._washColors  = []
+      this._washEnabled = false
+    }
   }
 
   /**
@@ -730,6 +798,35 @@ export class NoiseField {
   }
 
   /**
+   
+   * Fills the entire canvas with the background color at full opacity.
+   * Called ONCE before the RAF loop starts, in LivingCanvas.jsx.
+   *
+   * Without this, the canvas starts as opaque black (the browser's default
+   * for alpha:false contexts) and takes ~3 seconds of alpha-decay accumulation
+   * to reach the marble/titan surface color. During that transition, particles
+   * drawn at low opacity on a dark surface are nearly invisible — the engine
+   * is running correctly but producing imperceptible output.
+   *
+   * This is not called in render() because render() deliberately does NOT
+   * fill at full opacity — the alpha-decay trail effect depends on partial
+   * opacity fills. This method exists only for the cold-start case.
+   *
+   * @param {CanvasRenderingContext2D} ctx
+   */
+  primeCanvas(ctx) {
+    // Temporarily remove the DPR scale transform so we can fill
+    // in physical pixel space (canvas.width × canvas.height), which is
+    // what ctx.canvas.width returns. The scale is restored afterward.
+    ctx.save()
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.fillStyle = `rgb(${this._bgR | 0},${this._bgG | 0},${this._bgB | 0})`
+    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height)
+    ctx.restore()
+  }
+
+
+  /**
    * Updates the tier config mid-session.
    * Called by LivingCanvas.jsx when PerformanceMonitor triggers a downgrade.
    *
@@ -750,6 +847,65 @@ export class NoiseField {
     this._useDomainWarp      = newTierConfig.noiseOctaves >= 3
     this._fieldUpdateInterval = Math.round(newTierConfig.targetFPS / 10)
     this._fieldNeedsUpdate   = true
+
+  }
+
+  /**
+   * Renders the painting's large color washes — soft gradient pools that
+   * give the canvas its painting character. Called every frame from render().
+   *
+   * Each wash color drifts slowly across the canvas via its own noise
+   * trajectory, creating the organic migration of poured paint.
+   *
+   * POSITION MATH:
+   *   Each wash color i has a noise-driven position:
+   *     x = noise(time × washSpeed + i × 7.3, 0) → mapped to canvas width
+   *     y = noise(time × washSpeed + i × 7.3, 5) → mapped to canvas height
+   *   The offset i × 7.3 ensures each color takes a completely different path.
+   *   The slow time multiplier (washSpeed = 0.04 of normal) makes the
+   *   positions move imperceptibly — visible only over many minutes.
+   *
+   * @param {CanvasRenderingContext2D} ctx
+   */
+  _renderWashLayer(ctx) {
+    if (!this._washEnabled || this._washColors.length === 0) return
+
+    const t = this._time * this._washSpeed
+
+    for (let i = 0; i < this._washColors.length; i++) {
+      const wash = this._washColors[i]
+
+      // Noise-driven position (same noise function used by the particle field)
+      // The 7.3 offset per color is an irrational number — ensures no two
+      // colors share a trajectory or meet at predictable points.
+      const nx = this._noise(t + i * 7.3, 0.0)          // [-1, 1]
+      const ny = this._noise(t + i * 7.3, 5.0)          // [-1, 1]
+
+      // Map from noise space [-1,1] to canvas space
+      // Using 0.15 margin so washes can partially bleed off the edges,
+      // which creates the natural "paint continues beyond the canvas" quality
+      const x = ((nx + 1) * 0.5) * (this._width  * 1.3) - this._width  * 0.15
+      const y = ((ny + 1) * 0.5) * (this._height * 1.3) - this._height * 0.15
+
+      const radius = wash.radius ?? 320
+
+      // Radial gradient: full wash color at center, transparent at edge
+      // The falloff is slightly concave (power 1.5) so the color pool
+      // has a visible center without a hard edge — like paint pooled in
+      // the middle of a canvas laid flat on the floor.
+      const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius)
+      gradient.addColorStop(0,    `rgba(${wash.r}, ${wash.g}, ${wash.b}, ${wash.opacity})`)
+      gradient.addColorStop(0.30, `rgba(${wash.r}, ${wash.g}, ${wash.b}, ${wash.opacity * 0.75})`)
+      gradient.addColorStop(0.60, `rgba(${wash.r}, ${wash.g}, ${wash.b}, ${wash.opacity * 0.35})`)
+      gradient.addColorStop(0.85, `rgba(${wash.r}, ${wash.g}, ${wash.b}, ${wash.opacity * 0.08})`)
+      gradient.addColorStop(1.0,  `rgba(${wash.r}, ${wash.g}, ${wash.b}, 0)`)
+
+      ctx.globalAlpha = 1.0   // gradient handles its own opacity
+      ctx.fillStyle   = gradient
+      ctx.beginPath()
+      ctx.arc(x, y, radius, 0, TWO_PI)
+      ctx.fill()
+    }
   }
 
   /**

@@ -135,20 +135,22 @@ const BREAKTHROUGH_ACTIONS = new Set(['affirm_progress', 'suggest_framework'])
 // ─────────────────────────────────────────────────────────────────────────────
 
 function mergeCanvasParams(painting, overrides) {
-  if (!overrides) return painting
-
-  return {
-    name:            painting.name,
-    fieldAngleOffset: painting.fieldAngleOffset,
-    flowSpeed:        painting.flowSpeed        * (overrides.flowMul     ?? 1.0),
-    angleVariance:    painting.angleVariance    * (overrides.varianceMul ?? 1.0),
-    particleRadius:   painting.particleRadius   * (overrides.radiusMul   ?? 1.0),
-    particleSpeed:    painting.particleSpeed    * (overrides.speedMul    ?? 1.0),
-    particleOpacity:  painting.particleOpacity  * (overrides.opacityMul  ?? 1.0),
-    ageSediment:      painting.ageSediment      + (overrides.sedimentAdd ?? 0.0),
-    settleBias:       painting.settleBias,
+    if (!overrides) return painting
+  
+    return {
+      // 1. Spread operator preserves ALL base properties automatically,
+      // guaranteeing we never drop particleColors, washColors, or washSpeed!
+      ...painting,
+  
+      // 2. Apply the specific mathematical overrides for the current Canvas State
+      flowSpeed:        painting.flowSpeed        * (overrides.flowMul     ?? 1.0),
+      angleVariance:    painting.angleVariance    * (overrides.varianceMul ?? 1.0),
+      particleRadius:   painting.particleRadius   * (overrides.radiusMul   ?? 1.0),
+      particleSpeed:    painting.particleSpeed    * (overrides.speedMul    ?? 1.0),
+      particleOpacity:  painting.particleOpacity  * (overrides.opacityMul  ?? 1.0),
+      ageSediment:      painting.ageSediment      + (overrides.sedimentAdd ?? 0.0),
+    }
   }
-}
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -391,15 +393,20 @@ export default function LivingCanvas({
       monitorRef.current = monitor
 
       // ── Step 6: Snap to correct initial colors ────────────────────────────
-      // Critical: this writes the correct colors to the canvas BEFORE
-      // the first visible frame. Prevents any flash of incorrect palette.
       paletteBlend.snapToState(activeTheme, initialStateName)
       phaseInterp.snapToPhase(initialPhase)
 
-      // ── Step 7: Paint one silent frame before reveal ──────────────────────
-      // This fills the canvas with the correct background color before the
-      // Framer Motion fade-in begins. Without this, the canvas is momentarily
-      // transparent between mount and first paint.
+        // ── Step 6b: Prime the canvas with solid background ───────────────────
+        // The canvas context with alpha:false initializes as opaque black.
+        // Alpha-decay accumulation from black to marble takes ~3 seconds at
+        // alphaDecay=0.015 — during which particles on dark ground are invisible.
+        // A single solid fill of the background color corrects this instantly,
+        // so particles are visible against the correct ground color from frame 1.
+      noiseField.primeCanvas(ctx)
+
+        // ── Step 7: Paint one RAF-style frame before reveal ──────────────────
+        // This draws the first set of particles on top of the primed background,
+        // so the canvas has real content before Framer Motion fades it in.
       const now = performance.now()
       paletteBlend.update(now)
       phaseInterp.update(now)

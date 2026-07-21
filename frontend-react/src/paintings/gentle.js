@@ -3,149 +3,166 @@
  *
  * The Gentle painting — Helen Frankenthaler, "Mountains and Sea" (1952)
  *
- * ARTISTIC PHILOSOPHY: THE SOAK-STAIN
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT YOU ARE LOOKING AT IN THE REFERENCE IMAGE
+ * ─────────────────────────────────────────────────────────────────────────────
  *
- * Frankenthaler poured heavily diluted paint directly onto raw, unprimed
- * canvas laid flat on the floor. The paint didn't sit on the surface —
- * it was absorbed into the fabric itself. The resulting image has no
- * separation between medium and ground. The color IS the canvas.
+ * The painting has five distinct color areas that the eye discovers gradually:
  *
- * This is the governing law of this painting mode: the particles must
- * not appear to move across the surface. They must appear to be emerging
- * from within it — blooming outward from the material itself — and then
- * slowly reabsorbing back in. The user should never see a particle.
- * They should only see color, slowly redistributing its weight.
+ * 1. The CERULEAN BLUE — upper right and the blue "sea" stripe along the
+ *    bottom. Genuinely blue. Not a blue tint — blue. Pool-like.
  *
- * THE PERIPHERAL VISION TRICK:
+ * 2. The CORAL PINK — the large central-left area. Warm, salmon-adjacent.
+ *    The biggest color mass in the painting.
  *
- * When the user looks directly at the chat text, the peripheral nervous
- * system registers the background as a still image. The movement is
- * below the threshold of foveal attention — it only becomes visible
- * when the user looks away or unfocuses.
+ * 3. The SAGE GREEN — upper center and scattered passages. The one cool-
+ *    warm neutral. More present than it appears at first.
  *
- * This is achieved mathematically through two simultaneous effects:
- *   1. Large radius + microscopic opacity = soft luminous clouds that
- *      register as tone, not motion
- *   2. Zero angle variance = perfectly laminar flow with no jitter
- *      to attract peripheral attention
+ * 4. The RAW LINEN — the cream ground that shows through everywhere,
+ *    especially at the edges. Where no paint was poured.
  *
- * CLINICAL PURPOSE:
+ * 5. The PALE LAVENDER — a brief atmospheric passage between blue and pink.
  *
- * The Gentle canvas is a visual de-escalator. Surrounding an anxious
- * user with an environment that is slow, seamless, and unified provides
- * what Winnicott called a "holding environment" — a signal to the nervous
- * system that there is no urgency, no threat, no need for vigilance.
+ * These are not adjacent, equal divisions of the canvas. They overlap,
+ * pool at their centers, thin toward their edges, and reveal each other
+ * through their transparency. The raw linen ground unifies everything.
  *
- * It physically invites co-regulation. The breath slows to match it.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY WASH LAYER + PARTICLES, NOT PARTICLES ALONE
+ * ─────────────────────────────────────────────────────────────────────────────
  *
- * FRANKENTHALER'S PALETTE TRANSLATED:
+ * A single particle is a 3.2px dot at 0.28 opacity. No matter how many
+ * accumulate, dots never look like poured paint. They look like dots.
  *
- * Mountains and Sea used a specific set of diluted, almost accidental
- * colors — a washed blue-green for the sea, a soft rose-pink for the
- * distant hills, a yellowed ochre for the scraped canvas showing through.
- * These don't map directly to our Olympian/Titan palettes, but the
- * painting engine's current particle color (set by PaletteBlend from
- * the theme's bronze/terracotta tokens) already carries their warmth.
- * The gentle params amplify the softness of those colors without
- * introducing new ones — the palette remains therapeutically coherent.
+ * Frankenthaler poured heavily diluted paint — the color spread across
+ * the canvas in continuous, area-filling washes that covered square feet
+ * of surface with a single gesture. This is an inherently different shape
+ * than a dot: it is an area.
  *
- * PHASE BEHAVIOR:
+ * The wash layer creates those areas. Soft gradient circles, 280–380px
+ * radius, slowly drifting via noise-driven positions, accumulate into
+ * visible pools of color against the marble ground. The particles then
+ * add fine textural life on top of those pools — the sensation of the
+ * paint surface itself, not just the color.
  *
- * settleBias points toward a gentle horizontal drift (0 radians = east).
- * In opening: the field is nearly circular — no preferred direction.
- * In closing: the particles have all found the same slow eastward drift,
- * like a tide going out. Quieter than stillness, because still water
- * can feel frozen. Moving water, very slowly, feels like rest.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WASH LAYER STEADY STATE CALCULATION
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * With alphaDecay=0.015 and wash opacity=0.022 per frame:
+ *   Combined per frame: new = 0.978 × old + 0.022 × washColor
+ *   Steady state: old = 0.022/0.022 × washColor - no, let me redo:
+ *
+ *   Alpha decay first: afterDecay = 0.985 × old + 0.015 × bgColor
+ *   Wash second: afterWash = 0.978 × afterDecay + 0.022 × washColor
+ *   Expand: afterWash = 0.978 × (0.985 × old + 0.015 × bg) + 0.022 × wash
+ *          = 0.9633 × old + 0.01467 × bg + 0.022 × wash
+ *   Steady state (afterWash = old):
+ *     old × (1 - 0.9633) = 0.01467 × bg + 0.022 × wash
+ *     old × 0.0367 = 0.01467 × bg + 0.022 × wash
+ *     old = 0.40 × bg + 0.60 × wash
+ *
+ * At steady state: canvas is 40% background, 60% wash color.
+ * Frankenthaler's cerulean [95, 165, 195] on marble [237, 234, 227]:
+ *   R: 0.40 × 237 + 0.60 × 95  = 95  + 57  = 152  (clearly blue)
+ *   G: 0.40 × 234 + 0.60 × 165 = 94  + 99  = 193  (clearly blue-green)
+ *   B: 0.40 × 227 + 0.60 × 195 = 91  + 117 = 208  (clearly blue)
+ *   Result: rgb(152, 193, 208) — a clean, visible cerulean wash. ✓
  */
-
-// The physical parameters exported from this file directly feed
-// NoiseField.updatePaintingParams() via LivingCanvas.jsx.
-// Every value here was chosen to produce the soak-stain effect at
-// three different scales simultaneously:
-//   macro   — the broad sweeping currents (large radius, low opacity)
-//   meso    — the mid-scale color pooling (slow field evolution)
-//   micro   — the sediment effect (high ageSediment)
 
 const gentle = {
     name: 'gentle',
   
-    // ── Vector field character ──────────────────────────────────────────────────
+    // ── WASH LAYER — Frankenthaler's poured color areas ─────────────────────────
+    //
+    // These are the primary visual element of the Gentle mode.
+    // Five colors from the painting, each moving on its own noise trajectory.
+    // The resulting canvas looks like you are standing in front of the painting.
+    //
+    // Opacity per color is tuned to the color's actual abundance in the painting.
+    // Blue and pink are the largest areas → higher opacity.
+    // Lavender is the most ephemeral → lowest opacity.
+    //
+    // Radius is tuned to the color's spatial character in the painting:
+    // The sea/sky blue covers the upper third of the canvas → large radius.
+    // The lavender is a transitional passage → medium.
+    washColors: [
+      // Cerulean blue — the sea and sky. The most saturated color in the painting.
+      // In the reference: upper right, and the horizontal stripe at bottom.
+      // High opacity + large radius creates the sea-like sweep.
+      { r: 95,  g: 165, b: 195, opacity: 0.022, radius: 380 },
   
-    // fieldAngleOffset: rotates the entire field's base direction.
-    // 0 = horizontal drift (eastward). Gentle doesn't impose a direction;
-    // it lets the fBm noise dominate, with only the faintest eastward lean.
-    // A value of 0 means the macro-currents are purely noise-driven.
-    fieldAngleOffset: 0.0,
+      // Coral pink — the dominant color mass. Large, warm, central.
+      // Slightly lower opacity because it's more translucent in the actual painting.
+      { r: 208, g: 130, b: 110, opacity: 0.020, radius: 340 },
   
-    // flowSpeed: multiplier on the field's temporal evolution rate.
-    // 0.22 means the vector field evolves at 22% of the standard rate.
-    // This is what makes the macro-currents feel like deep ocean water —
-    // they move, but on a geological timescale.
-    // At 60fps, the field shifts approximately 1.3° per second on average.
+      // Sage green — the land, the hills. Cooler than the pink.
+      // More diffuse in the painting — medium opacity, medium radius.
+      { r: 130, g: 175, b: 140, opacity: 0.016, radius: 290 },
+  
+      // Pale lavender — the atmospheric haze where sea meets sky.
+      // Rarely noticed consciously — this is the subliminal color.
+      { r: 170, g: 155, b: 192, opacity: 0.012, radius: 250 },
+  
+      // Warm ochre — the raw canvas catching warm light at the edges.
+      // Not a strong color; just a slight warming where the linen shows.
+      { r: 218, g: 195, b: 155, opacity: 0.009, radius: 220 },
+    ],
+  
+    // How fast the wash positions drift (fraction of field evolution speed).
+    
+    // 0.035 means the wash positions move at 3.5% of the field's normal rate —
+    // perceptibly stable over a minute, subtly different over an hour.
+    washSpeed: 0.035,
+  
+    // ── PARTICLE COLOR PALETTE ────────────────────────────────────────────────
+    //
+    // The particles provide fine textural life ON TOP of the wash layer.
+    // Their colors should relate to the wash colors but be more varied —
+    // the micro-texture of the paint surface, not the wash itself.
+    particleColors: [
+      [140, 185, 195],   // blue-green — echoes the cerulean wash
+      [210, 145, 130],   // coral — echoes the pink wash
+      [145, 178, 148],   // sage — echoes the green wash
+      [180, 165, 200],   // lavender — the atmospheric in-between tone
+      [218, 195, 155],   // warm linen — the canvas ground itself
+      [110, 155, 185],   // deeper cerulean — shadow in the blue areas
+    ],
+  
+    // ── VECTOR FIELD ──────────────────────────────────────────────────────────
+  
+    // Minimal directional lean — the flow is almost circular, barely eastward.
+    // Frankenthaler worked from above with no preferred direction.
+    fieldAngleOffset: 0.05,
+  
+    // Glacially slow field evolution
     flowSpeed: 0.22,
   
-    // ── Particle motion ─────────────────────────────────────────────────────────
+    // ── PARTICLE PHYSICS ─────────────────────────────────────────────────────
   
-    // particleSpeed: how far each particle moves per frame along its vector.
-    // 0.28 = 28% of the standard travel speed.
-    // Crucially, slow particles overlap heavily because they linger in each
-    // position for many frames — this creates the dense, pooled color effect.
-    particleSpeed: 0.28,
+    particleSpeed: 0.28,    // the slowest particles — they drift, not travel
+    angleVariance: 0.0,     // zero jitter — perfect laminar flow
   
-    // angleVariance: how much each particle deviates from its pure vector angle.
-    // 0.0 = absolutely zero deviation. Perfect laminar flow.
-    // This is the most important parameter for the peripheral vision effect —
-    // any jitter above ~0.04 will attract the eye's motion detection system.
-    // Zero variance means the field looks like slow water, not scattered leaves.
-    angleVariance: 0.0,
-  
-    // ── Visual character ─────────────────────────────────────────────────────────
-  
-    // particleRadius: the drawn dot radius in CSS pixels (at DPR 1.0).
-    // 3.2 is large — roughly a grain of fine sand visible under magnification.
-    // But because opacity is microscopic, overlapping large dots don't appear
-    // as dots; they appear as soft pools of tonal variation.
-    // This is directly inspired by Frankenthaler's poured paint: a large
-    // volume of diluted color leaving a wide, soft impression.
+    // Large radius for soft accumulation into pools
     particleRadius: 3.2,
   
-    // particleOpacity: the alpha of each individual drawn dot.
-    // 0.09 means each dot is 91% transparent.
-    // At 1400 particles overlapping over many frames, the accumulated opacity
-    // creates visible color, but no single dot is ever perceptible.
-    // This is the mathematical equivalent of heavily diluted watercolor:
-    // individually imperceptible, collectively luminous.
-    particleOpacity: 0.09,
+    // Corrected from 0.09 — the original was too low to be visible.
+    // At 0.28, particles are still "watercolor" (72% transparent)
+    // but accumulate into genuinely visible soft areas in dense zones.
+    particleOpacity: 0.28,
   
-    // ageSediment: how strongly particles drift toward the background color
-    // as they age (0.0 = no drift, 1.0 = immediate full reabsorption).
-    // 0.72 is high — particles spend their youth leaving a color trace,
-    // then progressively dissolve into the background surface.
-    // This creates the soak-stain effect: color appears, pools, then
-    // slowly sinks back into the stone. The canvas is always mid-absorption.
-    ageSediment: 0.72,
+    // High sediment — particles reabsorb into the ground as they age,
+    // reinforcing the soak-stain quality where color bleeds into the fabric.
+    ageSediment: 0.68,
   
-    // ── Field settling (phase interpolation target) ──────────────────────────────
+    // ── PHASE SETTLING ───────────────────────────────────────────────────────
   
-    // settleBias: the angle (radians) the field drifts toward as the session
-    // reaches closing phase. 0 = east (horizontal rightward drift).
-    // For Gentle, this is a barely-perceptible eastward lean — not a strong
-    // direction, more like a tide finding its way.
+    // Eastward — a barely perceptible tide-going-out direction at closing.
     settleBias: 0.0,
   
-    // ── Breathing character ───────────────────────────────────────────────────────
-    // These are used by PhaseInterpolator's starting modifiers for Gentle sessions.
-    // They override the tier config's base breathDepth during the opening phase.
-  
-    // breathDepthMulOverride: how much more expansive the breath cycle is
-    // compared to standard, specifically for Gentle sessions.
-    // 1.5 = 50% more expansive — the canvas visibly expands and contracts
-    // on a 3.2-second cycle, like a slow, conscious inhale.
     breathDepthMulOverride: 1.50,
-  
-    // flowSpeedBaseOverride: the base noiseSpeed multiplier for the opening phase
-    // of a Gentle session — before PhaseInterpolator begins calming it further.
-    flowSpeedBaseOverride: 0.65,
+    flowSpeedBaseOverride:  0.65,
   }
+
   
   export default gentle

@@ -1,23 +1,27 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import LivingCanvas from './canvas/LivingCanvas'
 
 export default function App() {
+  // Debugger: Read the actual canvas pixel color at the center of the screen
+  useEffect(() => {
+    const id = setInterval(() => {
+      const canvas = document.querySelector('canvas')
+      if (!canvas) return
+      const ctx = canvas.getContext('2d', { willReadFrequently: true }) // Added to suppress browser warnings
+      if (!ctx) return
+      
+      const w = canvas.width, h = canvas.height
+      const pixel = ctx.getImageData(w / 2, h / 2, 1, 1).data
+      
+      console.log(`[Canvas Center Pixel] rgb(${pixel[0]}, ${pixel[1]}, ${pixel[2]})`)
+    }, 3000)
+    
+    return () => clearInterval(id)
+  }, [])
+
   return (
-    // The bg-surface-base ensures that if the canvas fails to load, 
-    // the user still sees the correct theme background color.
-    // overflow-hidden prevents any accidental scrolling during the test.
     <main className="relative w-full h-dvh overflow-hidden bg-surface-base">
-      
-      {/* Forcing the state to 'idle' and role to 'a' to test the engine. 
-        Note: Because your sessionStore stub returns `null`, LivingCanvas 
-        will automatically fall back to DEFAULT_PAINTING_PARAMS. 
-        
-        To see your new `gentle` painting in action during this test, 
-        temporarily change your export in `src/paintings/index.js` to:
-        export const DEFAULT_PAINTING_PARAMS = gentle
-      */}
       <LivingCanvas role="a" overrideCanvasState="idle" />
-      
     </main>
   )
 }
