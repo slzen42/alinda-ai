@@ -89,6 +89,13 @@
     --canvas-glow-r: 122;
     --canvas-glow-g: 140;
     --canvas-glow-b: 110;
+
+
+    
+    /* Keyboard inset and true viewport size custom properties */
+    --true-viewport-height: 100dvh;
+    --true-viewport-width:  100vw;
+    --keyboard-inset:       0px;
   }
 
 
