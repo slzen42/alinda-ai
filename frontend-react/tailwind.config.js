@@ -159,6 +159,8 @@ export default {
         md:      '12px',
         lg:      '16px',
         xl:      '20px',
+       '2xl':   '24px',
+       '3xl':   '32px',
         full:    '9999px',   // for the stage pill, glow indicators
         // Asymmetric bubble radii are handled in component CSS directly
         // (MessageBubble.jsx uses inline style or a custom class for the
