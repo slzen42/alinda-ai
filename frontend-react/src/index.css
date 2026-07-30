@@ -96,6 +96,7 @@
     --true-viewport-height: 100dvh;
     --true-viewport-width:  100vw;
     --keyboard-inset:       0px;
+
   }
 
 
@@ -227,6 +228,26 @@
        the CSS user-select on specific elements controls that. */
     -webkit-user-select: none;
     user-select:         none;
+  }
+
+  /* Override browser-injected input backgrounds — fixes the white box bug
+   visible on Windows/Edge where bg-transparent is overridden by UA styles */
+  input,
+  textarea,
+  select {
+    background-color: transparent;
+    -webkit-appearance: none;
+    appearance: none;
+    color: inherit;
+  }
+
+  /* Ensure autofill doesn't introduce a foreign background */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--text-primary);
+    -webkit-box-shadow: 0 0 0 1000px var(--surface-base) inset;
+    transition: background-color 5000s ease-in-out 0s;
   }
 
   /* Re-enable text selection specifically for message content and
