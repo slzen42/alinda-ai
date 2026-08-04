@@ -89,6 +89,12 @@ import React, {
   } from 'react'
   import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
   import { clsx } from 'clsx'
+
+
+
+  // Add after the existing clsx import:
+  import { useSessionStore } from 'store/sessionStore'
+  import { useThemeStore }   from 'store/themeStore'
   
   
   // ─────────────────────────────────────────────────────────────────────────────
@@ -116,7 +122,48 @@ import React, {
   const EXPANDED_HOLD_MS  = 5000   // how long the pill stays open on new stage
   const HOVER_GRACE_MS    = 800    // delay before collapse timer after mouse-leave
   
-  
+  // ─────────────────────────────────────────────────────────────────────────────
+  // PHASE ARC GEOMETRY (for the collapsed dot ring)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  const PILL_ARC_SIZE   = 18       // SVG viewBox size for the collapsed-dot arc
+  const PILL_CENTER     = 9        // cx, cy
+  const PILL_RADIUS     = 6.5      // arc radius — tighter than standalone indicator
+  const PILL_CIRC       = 2 * Math.PI * PILL_RADIUS   // ≈ 40.84
+  const PILL_TRACK_W    = 0.8      // track stroke width
+  const PILL_ARC_W      = 1.2      // drawn arc stroke width
+
+  const PHASE_PROGRESS_MAP = Object.freeze({
+    opening:     0.10,
+    exploration: 0.32,
+    deepening:   0.56,
+    resolution:  0.76,
+    closing:     0.92,
+    closed:      1.00,
+  })
+
+  function resolvePhaseProgress(phase) {
+    return PHASE_PROGRESS_MAP[phase] ?? PHASE_PROGRESS_MAP.opening
+  }
+
+  function phaseToOffset(progress) {
+    return PILL_CIRC * (1 - Math.max(0, Math.min(1, progress)))
+  }
+
+  function getArcColor(isDark) {
+    // Cooler sage-bronze — sibling to AlindaPresencePulse, not identical
+    return isDark
+      ? 'rgba(148, 168, 138, 0.85)'
+      : 'rgba(112, 130, 100, 0.80)'
+  }
+
+  function getTrackColor(isDark) {
+    return isDark
+      ? 'rgba(255,255,255,0.09)'
+      : 'rgba(0,0,0,0.11)'
+  }
+
+
   // ─────────────────────────────────────────────────────────────────────────────
   // THE MICRO DOT (collapsed state)
   //
@@ -124,7 +171,12 @@ import React, {
   // Taps/clicks expand the pill.
   // ─────────────────────────────────────────────────────────────────────────────
   
-  function MicroDot({ onExpand }) {
+  function MicroDot({ onExpand, phase, isDark, prefersReduced }) {
+    const progress     = resolvePhaseProgress(phase)
+    const targetOffset = phaseToOffset(progress)
+    const arcColor     = getArcColor(isDark)
+    const trackColor   = getTrackColor(isDark)
+  
     return (
       <motion.button
         type="button"
@@ -136,20 +188,80 @@ import React, {
           focus-visible:ring-2 focus-visible:ring-bronze/60
           focus-visible:ring-offset-2 focus-visible:ring-offset-transparent
         "
-        aria-label="Show current session phase"
-        whileHover={{ scale: 1.4 }}
-        whileTap={{ scale: 0.9 }}
+        aria-label="Show current session phase and stage"
+        whileHover={{ scale: 1.35 }}
+        whileTap={{ scale: 0.88 }}
         transition={{ type: 'tween', ease: [0.20, 0.00, 0.00, 1.00], duration: 0.2 }}
       >
-        <div
-          className="
-            rounded-full
-            bg-surface-overlay/80
-            border border-surface-edge/60
-            backdrop-blur-sm
-          "
-          style={{ width: 6, height: 6 }}
-        />
+        {/*
+          The SVG contains both the phase arc ring AND the frosted dot center.
+          The arc rotates -90° so it starts from 12 o'clock.
+          The dot sits at the SVG center as a foreignObject isn't needed —
+          a filled circle with the right color is sufficient at this size.
+        */}
+        <svg
+          width={PILL_ARC_SIZE}
+          height={PILL_ARC_SIZE}
+          viewBox={`0 0 ${PILL_ARC_SIZE} ${PILL_ARC_SIZE}`}
+          aria-hidden="true"
+          style={{ transform: 'rotate(-90deg)' }}
+        >
+          {/* Track — full circle, hairline */}
+          <circle
+            cx={PILL_CENTER}
+            cy={PILL_CENTER}
+            r={PILL_RADIUS}
+            fill="none"
+            stroke={trackColor}
+            strokeWidth={PILL_TRACK_W}
+          />
+  
+          {/* Phase arc — animates on phase change */}
+          <motion.circle
+            cx={PILL_CENTER}
+            cy={PILL_CENTER}
+            r={PILL_RADIUS}
+            fill="none"
+            stroke={arcColor}
+            strokeWidth={PILL_ARC_W}
+            strokeLinecap="round"
+            strokeDasharray={PILL_CIRC}
+            animate={{ strokeDashoffset: targetOffset }}
+            initial={{ strokeDashoffset: PILL_CIRC }}
+            transition={prefersReduced
+              ? { duration: 0 }
+              : {
+                  type:     'tween',
+                  ease:     [0.25, 0.10, 0.10, 1.00],
+                  duration: 1.2,
+                }
+            }
+          />
+  
+          {/*
+            The center dot — the original 6px frosted glass sphere,
+            approximated as a filled circle.
+            Using rgba with slight transparency so the canvas breathes through it.
+            In Titan (dark): near-white frosted.
+            In Olympian (light): near-black frosted.
+          */}
+          <circle
+            cx={PILL_CENTER}
+            cy={PILL_CENTER}
+            r={2.8}
+            fill={isDark
+              ? 'rgba(210, 210, 205, 0.72)'
+              : 'rgba(38, 36, 33, 0.65)'
+            }
+            style={{
+              // Counteract the -90° SVG rotation so the dot stays circular
+              // (it already is a circle so this has no visual effect,
+              // but if a drop-shadow filter is ever added, this prevents skew)
+              transformOrigin: `${PILL_CENTER}px ${PILL_CENTER}px`,
+              transform: 'rotate(90deg)',
+            }}
+          />
+        </svg>
       </motion.button>
     )
   }
@@ -208,8 +320,9 @@ import React, {
   // MAIN COMPONENT
   // ─────────────────────────────────────────────────────────────────────────────
   
-  export default function StagePill({ mode, isVisible }) {
+  export default function StagePill({ mode, isVisible, phase }) {
     const prefersReduced    = useReducedMotion()
+    const isDark = useThemeStore(s => s.resolvedMode === 'dark')
   
     const [isExpanded, setIsExpanded] = useState(true)
     const [prevMode,   setPrevMode]   = useState(mode)
@@ -338,7 +451,12 @@ import React, {
               }}
             >
                 
-              <MicroDot onExpand={handleExpand} />
+                <MicroDot
+                  onExpand={handleExpand}
+                  phase={phase}
+                  isDark={isDark}
+                  prefersReduced={prefersReduced}
+                />
             </motion.div>
           )}
         </AnimatePresence>
